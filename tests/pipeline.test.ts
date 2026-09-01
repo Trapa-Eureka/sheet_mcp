@@ -4,6 +4,8 @@
 import { describe, expect, it } from "vitest";
 import path from "node:path";
 import {
+  applyFilter,
+  buildDryRunNotice,
   computeTemplateHash,
   resolveDryRun,
   SendPipeline,
@@ -374,5 +376,35 @@ describe("resolveDryRun", () => {
     expect(resolveDryRun("dry_run", false)).toBe(true);
     expect(resolveDryRun(undefined, true)).toBe(true);
     expect(resolveDryRun(undefined, false)).toBe(true);
+  });
+});
+
+describe("buildDryRunNotice", () => {
+  it("dryRun=true면 SEND_MODE/confirm 안내 문구를 반환한다", () => {
+    const notice = buildDryRunNotice(true);
+    expect(notice).toContain("SEND_MODE=live");
+    expect(notice).toContain("confirm=true");
+  });
+
+  it("dryRun=false(실발송)면 안내가 필요 없다", () => {
+    expect(buildDryRunNotice(false)).toBeUndefined();
+  });
+});
+
+describe("applyFilter", () => {
+  it("filter_column/filter_value가 없으면 전체 행을 그대로 반환한다", () => {
+    const rows = [
+      { rowIndex: 2, values: { status: "unpaid" } },
+      { rowIndex: 3, values: { status: "paid" } },
+    ];
+    expect(applyFilter(rows, undefined, undefined)).toEqual(rows);
+  });
+
+  it("filter_column/filter_value가 있으면 정확히 일치하는 행만 남긴다", () => {
+    const rows = [
+      { rowIndex: 2, values: { status: "unpaid" } },
+      { rowIndex: 3, values: { status: "paid" } },
+    ];
+    expect(applyFilter(rows, "status", "unpaid")).toEqual([rows[0]]);
   });
 });

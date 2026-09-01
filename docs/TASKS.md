@@ -55,10 +55,10 @@
 - 목표: DESIGN §4의 8단계 흐름 구현.
 - 완료 기준: [x] **TESTING §4 체크리스트 12항목 전부** `tests/pipeline.test.ts`로 통과 [x] check 통과
 
-### T8 — MCP 서버 · 상태: TODO · 의존: T7
+### T8 — MCP 서버 · 상태: DONE(2026-09-01) · 의존: T7
 
 - 목표: 도구 4종 등록 (DESIGN §5), 이중 안전장치(SEND_MODE + confirm), `.mcp.json` 커밋.
-- 완료 기준: [ ] 도구 입출력 zod 스키마 [ ] server.ts에 비즈니스 로직 없음(조립만) [ ] `npm run dev`로 기동 확인 [ ] check 통과
+- 완료 기준: [x] 도구 입출력 zod 스키마 [x] server.ts에 비즈니스 로직 없음(조립만) [x] `npm run dev`로 기동 확인 [x] check 통과
 
 ### T9 — e2e-mock + 커버리지 · 상태: TODO · 의존: T8
 
