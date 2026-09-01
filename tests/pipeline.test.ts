@@ -16,7 +16,12 @@ import type { SheetFixture } from "../src/mocks/inMemorySheetClient.js";
 import { MockNotificationProvider } from "../src/mocks/mockNotificationProvider.js";
 import { InMemorySendLog } from "../src/mocks/inMemorySendLog.js";
 import { FixedClock } from "../src/mocks/fixedClock.js";
-import type { SendLog, SendLogEntry, SendLogListOptions } from "../src/core/types.js";
+import type {
+  ClaimResult,
+  SendLog,
+  SendLogListOptions,
+  SendLogListResult,
+} from "../src/core/types.js";
 
 const LARGE_FIXTURE_PATH = path.resolve(process.cwd(), "fixtures/sheets/large-1000.json");
 const SHEET_ID = "sheet-1";
@@ -66,7 +71,7 @@ describe("SendPipeline — TESTING §4 체크리스트", () => {
   it("1. 빈 데이터 탭 → sent 0, 에러 아님", async () => {
     const { pipeline } = setup({ rows: [] });
     const result = await pipeline.run(SHEET_ID, { dryRun: false });
-    expect(result).toEqual({ sent: 0, failed: 0, skipped: 0, details: [] });
+    expect(result).toEqual({ sent: 0, failed: 0, skipped: 0, logFailed: 0, details: [] });
   });
 
   it("2. recipient_column 값 결측 행 → 그 행만 failed, _error에 사유", async () => {
@@ -367,6 +372,13 @@ describe("computeTemplateHash", () => {
     expect(a).not.toBe(b);
     expect(a).not.toBe(c);
   });
+
+  it("REG-001: 경계에 구분자와 같은 문자가 있어도 서로 다른 (subject,body) 조합은 충돌하지 않는다", () => {
+    // 예전 구현(공백 구분자로 이어붙임)에서는 이 두 조합이 똑같이 "A  B"가 되어 해시가 같았다.
+    const a = computeTemplateHash("A ", "B");
+    const b = computeTemplateHash("A", " B");
+    expect(a).not.toBe(b);
+  });
 });
 
 describe("resolveDryRun", () => {
@@ -411,7 +423,7 @@ describe("applyFilter", () => {
 });
 
 // SendLog의 commit()만 실패하도록 흉내내는 목 — AR-013(발송 성공 + 로컬 기록 실패) 재현용.
-// claim/release/wasSent/list는 내부 InMemorySendLog에 그대로 위임한다.
+// claim/release/wasSent/list/forceReleaseStaleClaim은 내부 InMemorySendLog에 그대로 위임한다.
 class CommitFailingSendLog implements SendLog {
   private readonly inner = new InMemorySendLog();
 
@@ -421,7 +433,7 @@ class CommitFailingSendLog implements SendLog {
     rowKey: string,
     templateHash: string,
     claimedAt: string,
-  ): boolean {
+  ): ClaimResult {
     return this.inner.claim(sheetId, tab, rowKey, templateHash, claimedAt);
   }
 
@@ -429,15 +441,74 @@ class CommitFailingSendLog implements SendLog {
     throw new Error("DB 쓰기 실패(테스트 주입)");
   }
 
-  release(sheetId: string, tab: string, rowKey: string, templateHash: string): void {
-    this.inner.release(sheetId, tab, rowKey, templateHash);
+  release(sheetId: string, tab: string, rowKey: string, templateHash: string, token: string): void {
+    this.inner.release(sheetId, tab, rowKey, templateHash, token);
+  }
+
+  forceReleaseStaleClaim(
+    sheetId: string,
+    tab: string,
+    rowKey: string,
+    templateHash: string,
+    olderThanMs: number,
+  ): boolean {
+    return this.inner.forceReleaseStaleClaim(sheetId, tab, rowKey, templateHash, olderThanMs);
   }
 
   wasSent(sheetId: string, tab: string, rowKey: string, templateHash: string): boolean {
     return this.inner.wasSent(sheetId, tab, rowKey, templateHash);
   }
 
-  list(sheetId: string, options?: SendLogListOptions): SendLogEntry[] {
+  list(sheetId: string, options?: SendLogListOptions): SendLogListResult {
+    return this.inner.list(sheetId, options);
+  }
+}
+
+// SendLog의 release()만 실패하도록 흉내내는 목 — GAP-003(release 실패가 배치를 중단시키지 않는지) 재현용.
+class ReleaseFailingSendLog implements SendLog {
+  private readonly inner = new InMemorySendLog();
+
+  claim(
+    sheetId: string,
+    tab: string,
+    rowKey: string,
+    templateHash: string,
+    claimedAt: string,
+  ): ClaimResult {
+    return this.inner.claim(sheetId, tab, rowKey, templateHash, claimedAt);
+  }
+
+  commit(
+    sheetId: string,
+    tab: string,
+    rowKey: string,
+    templateHash: string,
+    token: string,
+    sentAt: string,
+    messageId: string | undefined,
+  ): void {
+    this.inner.commit(sheetId, tab, rowKey, templateHash, token, sentAt, messageId);
+  }
+
+  release(): void {
+    throw new Error("release DB 오류(테스트 주입)");
+  }
+
+  forceReleaseStaleClaim(
+    sheetId: string,
+    tab: string,
+    rowKey: string,
+    templateHash: string,
+    olderThanMs: number,
+  ): boolean {
+    return this.inner.forceReleaseStaleClaim(sheetId, tab, rowKey, templateHash, olderThanMs);
+  }
+
+  wasSent(sheetId: string, tab: string, rowKey: string, templateHash: string): boolean {
+    return this.inner.wasSent(sheetId, tab, rowKey, templateHash);
+  }
+
+  list(sheetId: string, options?: SendLogListOptions): SendLogListResult {
     return this.inner.list(sheetId, options);
   }
 }
@@ -455,7 +526,7 @@ describe("docs/ADVERSARIAL_REVIEW_003.md 회귀 테스트", () => {
     expect(result.sent).toBe(1);
     expect(result.skipped).toBe(1);
     expect(provider.sent).toHaveLength(1);
-    expect(sendLog.list(SHEET_ID)).toHaveLength(1);
+    expect(sendLog.list(SHEET_ID).entries).toHaveLength(1);
   });
 
   it(
@@ -473,9 +544,20 @@ describe("docs/ADVERSARIAL_REVIEW_003.md 회귀 테스트", () => {
       expect(provider.sent).toHaveLength(1); // 실제 발송 자체는 성공했다
       expect(result.details[0]?.status).toBe("sent_log_failed");
       expect(result.details[0]?.error).toContain("로컬 발송 기록 저장에 실패");
-      // failed/sent 어느 쪽 카운트에도 들어가면 안 된다 — 별도 상태이므로 집계에서 제외된다.
+      // failed/sent 어느 쪽 카운트에도 들어가면 안 된다 — 별도 logFailed 집계로 빠진다(GAP-002).
       expect(result.sent).toBe(0);
       expect(result.failed).toBe(0);
+      expect(result.logFailed).toBe(1);
+      // 집계 불변식: sent+failed+skipped+logFailed === details.length가 항상 성립해야 한다.
+      expect(result.sent + result.failed + result.skipped + result.logFailed).toBe(
+        result.details.length,
+      );
+
+      // GAP-002: SendLog에 claim이 'claimed' 상태로 그대로 남아 있어야 한다 — commit이 실패했다고
+      // 'sent'로 잘못 확정되면 안 되고, 조회 시 정상 sent로 보이면 안 된다.
+      const logEntries = sendLog.list(SHEET_ID).entries;
+      expect(logEntries).toHaveLength(1);
+      expect(logEntries[0]?.sendStatus).toBe("claimed");
 
       // claim이 release되지 않았으므로 wasSent는 여전히 true — 재시도해도 다시 발송되지 않는다.
       expect(
@@ -486,6 +568,30 @@ describe("docs/ADVERSARIAL_REVIEW_003.md 회귀 테스트", () => {
           computeTemplateHash("[{{shop}}] 안내", "{{name}}님, 안녕하세요."),
         ),
       ).toBe(true);
+    },
+  );
+
+  it(
+    "GAP-003: release()가 그 자체로 실패해도 나머지 행은 계속 처리되고(배치가 중단되지 않고), " +
+      "release 실패 사실이 error 메시지에 남는다",
+    async () => {
+      const rows = [
+        { customer_id: "C-1", name: "Alice", email: "alice@example.com", shop: "Shop1" },
+        { customer_id: "C-2", name: "Bob", email: "bob@example.com", shop: "Shop1" },
+      ];
+      const sendLog = new ReleaseFailingSendLog();
+      // C-1은 provider가 실패시켜 release()를 타게 하고(그 release가 목에서 항상 throw한다),
+      // C-2는 정상 발송되어야 한다 — 앞선 행의 release 실패가 뒤 행 처리를 막지 않는지 확인.
+      const { pipeline, provider } = setup({ rows, sendLog, failFor: ["C-1"] });
+
+      const result = await pipeline.run(SHEET_ID, { dryRun: false });
+
+      expect(result.failed).toBe(1);
+      expect(result.sent).toBe(1);
+      expect(provider.sent.map((m) => m.rowKey)).toEqual(["C-2"]); // C-1은 실패, C-2는 발송됨
+      const failedDetail = result.details.find((d) => d.rowKey === "C-1");
+      expect(failedDetail?.status).toBe("failed");
+      expect(failedDetail?.error).toContain("예약 해제도 실패");
     },
   );
 

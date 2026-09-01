@@ -32,6 +32,7 @@ interface PipelineOutput {
   sent: number;
   failed: number;
   skipped: number;
+  logFailed: number;
   details: unknown[];
 }
 
@@ -42,6 +43,8 @@ interface SendNotificationsOutput extends PipelineOutput {
 
 interface SendLogOutput {
   entries: unknown[];
+  hasMore: boolean;
+  nextCursor?: string;
 }
 
 describe("e2e-mock: MCP stdio 서버 도구 4종", () => {
@@ -116,6 +119,7 @@ describe("e2e-mock: MCP stdio 서버 도구 4종", () => {
     const logResult = log.structuredContent as SendLogOutput;
     // dry-run만 수행했으므로 실제 발송 기록은 하나도 없어야 한다.
     expect(logResult.entries).toHaveLength(0);
+    expect(logResult.hasMore).toBe(false);
   });
 
   it("존재하지 않는 sheetId는 isError:true와 함께 원인이 담긴 메시지를 반환한다", async () => {

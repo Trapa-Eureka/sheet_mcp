@@ -21,12 +21,13 @@ import {
   type PipelineRowDetail,
 } from "../src/core/pipeline.js";
 
-const SHOW_VALUES = process.env.SMOKE_SHOW_VALUES === "1";
-
 // 기본값은 비민감 메타데이터(rowKey/상태)만 출력한다 — 실제 고객 이름/이메일/금액 등이
 // 터미널 기록이나 세션 로그에 남지 않도록 (docs/ADVERSARIAL_REVIEW_002.md AR-009).
-function formatDetail(detail: PipelineRowDetail): string {
-  if (SHOW_VALUES) {
+// showValues는 매개변수로 받는다 — 모듈 로드 시점의 상수로 두면 dotenv가 아직 .env를 읽기 전이라
+// .env에만 SMOKE_SHOW_VALUES=1을 적은 경우 반영되지 않는 버그가 있었다
+// (docs/ADVERSARIAL_REVIEW_003_RESOLUTION_GAPS.md GAP-004).
+function formatDetail(detail: PipelineRowDetail, showValues: boolean): string {
+  if (showValues) {
     const parts = [
       `rowKey=${detail.rowKey}`,
       `status=${detail.status}`,
@@ -45,6 +46,9 @@ async function main(): Promise<void> {
   // 들어오지 않았다 (docs/ADVERSARIAL_REVIEW_003.md AR-012). quiet: true로 dotenv 자체 배너를 꺼서
   // [smoke] 로그와 섞이지 않게 한다(server.ts와 달리 stdout 프로토콜 제약은 없지만 일관성을 위해).
   loadDotenv({ quiet: true });
+
+  // loadDotenv() 이후에 읽어야 .env로만 설정한 값도 반영된다(GAP-004).
+  const showValues = process.env.SMOKE_SHOW_VALUES === "1";
 
   const sheetId = process.env.SMOKE_SHEET_ID;
   if (!sheetId) {
@@ -71,7 +75,7 @@ async function main(): Promise<void> {
     console.log(
       `[smoke] 미리보기 결과: sent(발송될)=${String(preview.sent)} failed=${String(preview.failed)} skipped(중복)=${String(preview.skipped)}`,
     );
-    preview.details.forEach((detail) => console.log(formatDetail(detail)));
+    preview.details.forEach((detail) => console.log(formatDetail(detail, showValues)));
 
     if (preview.sent === 0) {
       console.log("[smoke] 발송될 대상 행이 없습니다. 여기서 종료합니다 (발송 없음).");
@@ -108,11 +112,12 @@ async function main(): Promise<void> {
     console.log(
       `[smoke] 발송 결과: sent=${String(sendResult.sent)} failed=${String(sendResult.failed)} skipped=${String(sendResult.skipped)}`,
     );
-    sendResult.details.forEach((detail) => console.log(formatDetail(detail)));
+    sendResult.details.forEach((detail) => console.log(formatDetail(detail, showValues)));
 
-    const logEntries = sendLog.list(sheetId);
+    const logPage = sendLog.list(sheetId);
     console.log(
-      `[smoke] SendLog(${sheetId}) 누적 기록(최신 ${String(logEntries.length)}건 조회): 확인 완료.`,
+      `[smoke] SendLog(${sheetId}) 누적 기록(최신 ${String(logPage.entries.length)}건 조회, ` +
+        `더 있음=${String(logPage.hasMore)}): 확인 완료.`,
     );
   } finally {
     // 사람이 반복 실행하는 스크립트라 DB 파일 핸들을 명시적으로 정리한다 (AR-018).

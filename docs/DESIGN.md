@@ -79,6 +79,11 @@ export interface StatusUpdate {
   error?: string | null;
 }
 
+// SendLog에는 이 두 상태만 저장된다. failed/skipped_duplicate/sent_log_failed는 시트에만 그
+// 실행의 결과로 기록되고 SendLog에는 남지 않는다 — 시트용 SendStatus와 분리하는 이유다
+// (docs/ADVERSARIAL_REVIEW_003_RESOLUTION_GAPS.md GAP-001/002).
+export type SendLogEntryStatus = "claimed" | "sent";
+
 export interface SheetClient {
   readConfig(sheetId: string): Promise<Record<string, string>>;
   readRows(sheetId: string, tab: string): Promise<SheetRow[]>;
@@ -107,52 +112,88 @@ export interface NotificationProvider {
 }
 
 // SqliteSendLog의 unique 키(§6: sheet_id, tab, row_key, template_hash)와 1:1 대응.
-// SendLog에는 확정 성공(claim 후 commit된) 발송만 남는다 — 검증 실패/발송 실패 행은 기록되지 않는다.
 export interface SendLogEntry {
   sheetId: string;
   tab: string;
   rowKey: string;
   templateHash: string;
-  sendStatus: SendStatus;
-  sentAt: string;
+  sendStatus: SendLogEntryStatus; // "claimed" | "sent" 뿐
+  sentAt: string; // claimed면 claim된 시각, sent면 확정(commit)된 시각
   messageId?: string;
-  error?: string;
 }
 
 export interface SendLogListOptions {
   limit?: number; // 생략 시 200, 최대 1000 (AR-015)
+  cursor?: string; // 이전 list() 결과의 nextCursor — 다음(더 오래된) 페이지 (GAP-006)
 }
 
-// claim/commit/release 3단계 — AR-011(같은 배치·동시 실행 중복 발송)/AR-013(발송 성공 후 로컬 기록
-// 실패) 대응. 예전 record()는 "먼저 전부 wasSent() 확인 → 나중에 전부 발송"이라는 배치 구조상,
-// 같은 rowKey가 한 배치에 두 번 있거나 다른 프로세스가 동시에 실행되면 두 곳 다 wasSent=false를
-// 보고 실제로 중복 발송될 수 있었다(TOCTOU). claim()이 "확인"과 "예약"을 원자적 단일 연산으로
-// 묶어 이 틈을 없앤다. SqliteSendLog는 claim()을 UNIQUE 제약이 있는 컬럼에 대한 INSERT로 구현해
-// 여러 프로세스가 같은 DB 파일을 봐도 원자성이 유지된다.
+// hasMore/nextCursor는 limit+1개를 조회해 계산한 정확한 값이다 — "entries.length===limit이면 더
+// 있다고 추측"하는 근사치가 아니다(GAP-006, 경계값에서 부정확했던 예전 방식).
+export interface SendLogListResult {
+  entries: SendLogEntry[];
+  hasMore: boolean;
+  nextCursor?: string; // hasMore===true일 때만 존재
+}
+
+// claim()의 결과. claimed===true일 때만 token이 존재하며 commit()/release()에 그대로 넘겨야 한다 —
+// 만료된 claim을 사람이 forceReleaseStaleClaim()으로 회수한 뒤 같은 키가 다시 claim되면 새
+// token이 발급되므로, 원래 시도(좀비 프로세스 등)가 뒤늦게 깨어나 옛 token으로 commit/release를
+// 불러도 새 claim을 건드리지 못한다(GAP-001).
+export interface ClaimResult {
+  claimed: boolean;
+  token?: string;
+}
+
+// claim/commit/release 3단계 + 소유권 토큰 + 만료 기반 수동 복구 — AR-011(같은 배치·동시 실행
+// 중복 발송)/AR-013(발송 성공 후 로컬 기록 실패)/GAP-001(중단된 claim의 영구 방치) 대응.
+// 예전 record()는 "먼저 전부 wasSent() 확인 → 나중에 전부 발송"이라는 배치 구조상, 같은 rowKey가
+// 한 배치에 두 번 있거나 다른 프로세스가 동시에 실행되면 두 곳 다 wasSent=false를 보고 실제로
+// 중복 발송될 수 있었다(TOCTOU). claim()이 "확인"과 "예약"을 원자적 단일 연산으로 묶어 이 틈을
+// 없앤다. SqliteSendLog는 claim()을 UNIQUE 제약이 있는 컬럼에 대한 INSERT로 구현해 여러 프로세스가
+// 같은 DB 파일을 봐도 원자성이 유지된다.
+//
+// claim 직후(commit/release 전) 프로세스가 죽으면 그 claim은 "claimed" 상태로 영구히 남는다 —
+// 자동으로 "sent"도, 자동으로 재사용 가능으로도 되지 않는다(실제로 발송됐는지 알 수 없어서다).
+// list()에서 sendStatus="claimed"로 그대로 보이므로 운영자가 발견할 수 있고, 충분히 오래됐다고
+// 판단되면 forceReleaseStaleClaim()으로 **명시적으로만** 회수한다 — 자동 만료·자동 재사용은
+// 하지 않는다. 이 복구 함수는 MCP 도구로는 노출하지 않는다(자율 에이전트가 "발송됐을 수도 있는"
+// 상태를 스스로 재사용 가능하게 만드는 건 안전하지 않다 — 사람이 직접 검토 후 스크립트/REPL로
+// 호출하는 것을 전제한다).
 export interface SendLog {
-  // true = 이 호출자가 유일하게 발송을 시도해도 됨(예약 성공). false = 이미 선점됨 → 발송하지 말고
-  // skipped_duplicate 처리. true를 반환했다면 반드시 commit() 또는 release()로 마무리해야 한다.
+  // claimed=true면 이 호출자가 유일하게 발송을 시도해도 됨(예약 성공) — 반환된 token을 반드시
+  // commit() 또는 release()에 넘겨야 한다. claimed=false면 이미 선점됨(claimed든 sent든) →
+  // 발송하지 말고 skipped_duplicate 처리.
   claim(
     sheetId: string,
     tab: string,
     rowKey: string,
     templateHash: string,
     claimedAt: string,
-  ): boolean;
-  // claim()==true 뒤 발송 성공 시 예약을 최종 기록으로 확정한다.
+  ): ClaimResult;
+  // claim()이 발급한 token과 일치할 때만 예약을 최종 발송 기록으로 확정한다. 불일치하면 에러.
   commit(
     sheetId: string,
     tab: string,
     rowKey: string,
     templateHash: string,
+    token: string,
     sentAt: string,
     messageId: string | undefined,
   ): void;
-  // claim()==true 뒤 발송 실패 시 예약을 해제한다 — 다음 실행에서 재시도 가능해진다.
-  release(sheetId: string, tab: string, rowKey: string, templateHash: string): void;
+  // claim()이 발급한 token과 일치할 때만 예약을 해제한다(재시도 가능해짐). 불일치하면 조용히 무시.
+  release(sheetId: string, tab: string, rowKey: string, templateHash: string, token: string): void;
+  // claim된 지 olderThanMs 이상이고 아직 commit 안 된 claim만 강제로 회수한다(token 불필요 — 사람이
+  // 직접 검토 후 호출). 조건에 안 맞으면 아무 것도 안 하고 false.
+  forceReleaseStaleClaim(
+    sheetId: string,
+    tab: string,
+    rowKey: string,
+    templateHash: string,
+    olderThanMs: number,
+  ): boolean;
   // 읽기 전용 조회(dry-run 미리보기 전용 — 상태를 바꾸지 않는다. 발송 흐름의 중복 방지는 claim()을 쓴다).
   wasSent(sheetId: string, tab: string, rowKey: string, templateHash: string): boolean;
-  list(sheetId: string, options?: SendLogListOptions): SendLogEntry[];
+  list(sheetId: string, options?: SendLogListOptions): SendLogListResult;
 }
 
 export interface Clock {
@@ -174,30 +215,40 @@ renderTemplate(template: string, values: Record<string, string>): RenderResult
 1. `readConfig` → zod 파싱 (실패 시 어떤 키가 왜 틀렸는지 명시한 에러)
 2. `readRows` → `filter_column/value` 적용
 3. 행별 렌더링: 수신자 결측·이메일 형식 불량·템플릿 변수 결측 행은 `failed` 후보로 표시하고 계속 진행
-   - `templateHash` = subject+body 템플릿의 sha256 앞 12자. 템플릿이 바뀌면 재발송 허용됨(의도된 동작)
+   - `templateHash` = subject를 sha256, body를 sha256한 뒤 그 두 다이제스트를 이어붙여 다시 sha256한
+     값의 앞 12자. subject/body 사이에 구분자 문자를 끼워 넣는 방식(과거 구현)은 그 구분자와 같은
+     문자가 경계에 있으면 서로 다른 (subject,body) 조합이 같은 해시로 충돌할 수 있었다
+     (`REG-001`, docs/ADVERSARIAL_REVIEW_003_RESOLUTION_GAPS.md — 실측으로 재현·확인됨). sha256
+     다이제스트는 항상 고정 64자라 이어붙이는 경계가 내용에 따라 흔들리지 않아 이 문제가 없다.
+     템플릿이 바뀌면 해시도 바뀌어 재발송이 허용된다(의도된 동작)
 4. **dryRun이면**: `sendLog.wasSent(rowKey, templateHash)`(읽기 전용)로만 중복 표시하고 결과 반환.
    provider/sendLog/시트 쓰기는 전부 없음.
 5. **dryRun이 아니면**: 행마다 다음을 **하나씩 끝까지 완결한 뒤 다음 행으로 넘어간다** (같은 배치에
    같은 rowKey가 두 번 있어도 두 번째 claim이 즉시 실패해 중복 발송을 막는다 — AR-011):
-   1. `sendLog.claim(rowKey, templateHash)` → false면 `skipped_duplicate` (provider 호출 안 함)
-   2. true면 `provider.send()` — **개별 try/catch**, 한 행 실패가 배치를 중단하지 않는다
-   3. 성공하면 `sendLog.commit(...)` → `sent`. commit 자체가 실패하면(발송은 됐지만 로컬 기록
-      실패) `release()`하지 않고 `sent_log_failed`로 표시(재발송 사고 방지, AR-013)
-   4. 실패(provider 실패/예외)면 `sendLog.release(...)` → `failed` (다음 실행에서 재시도 가능)
+   1. `sendLog.claim(rowKey, templateHash)` → `claimed=false`면 `skipped_duplicate`(provider 호출 안 함)
+   2. `claimed=true`면 `provider.send()` — **개별 try/catch**, 한 행 실패가 배치를 중단하지 않는다
+   3. 성공하면 `sendLog.commit(token, ...)` → `sent`. commit 자체가 실패하면(발송은 됐지만 로컬
+      기록 실패) `release()`하지 않고 `sent_log_failed`로 표시(재발송 사고 방지, AR-013)
+   4. 실패(provider 실패/예외)면 `sendLog.release(token, ...)` → `failed` (다음 실행에서 재시도 가능).
+      **release() 자체가 실패해도 절대 밖으로 던지지 않는다** — 실패 사실을 error 메시지와
+      stderr에만 남기고, 나머지 행 처리는 계속한다(`GAP-003` — 예전에는 release 실패가 배치
+      전체를 중단시켰다). 이 행의 claim은 재시도가 자동으로는 안 풀릴 수 있어 사람의
+      `forceReleaseStaleClaim()` 확인이 필요할 수 있다.
 6. `ensureStatusColumns` + `writeStatus` 일괄 write-back (§2 결측 정책, AR-014)
-7. 집계 반환: `{ sent, failed, skipped, details[] }` (`sent_log_failed`는 어느 카운트에도 들어가지
-   않는다 — details[]에서 상태를 직접 확인해야 한다)
+7. 집계 반환: `{ sent, failed, skipped, logFailed, details[] }`. `sent_log_failed`는 `sent`/`failed`
+   어느 쪽 카운트에도 들어가지 않고 `logFailed`로 별도 집계된다 — `sent+failed+skipped+logFailed`는
+   항상 `details.length`와 같다(집계 불변식, `GAP-002`)
 
 ## 5. MCP 도구 (src/server.ts)
 
 `@modelcontextprotocol/sdk`, stdio transport. 입력 스키마는 zod.
 
-| 도구                 | 입력                          | 동작                                                                                      |
-| -------------------- | ----------------------------- | ----------------------------------------------------------------------------------------- |
-| `read_rows`          | `sheetId`                     | config 적용된 대상 행 반환 (필터 반영, 최대 200행 미리보기)                               |
-| `preview_messages`   | `sheetId`                     | dryRun 파이프라인 실행 — 렌더된 메시지 목록과 결측/중복 경고 반환. **발송 없음**          |
-| `send_notifications` | `sheetId`, `confirm: boolean` | `confirm=true` **그리고** `SEND_MODE=live`일 때만 실발송. 아니면 dry-run 결과 + 안내 반환 |
-| `get_send_log`       | `sheetId`, `limit?: number`   | 발송 이력을 최신순으로 반환 (기본 200건, 최대 1000건 — AR-015)                            |
+| 도구                 | 입력                                           | 동작                                                                                                                                                                        |
+| -------------------- | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `read_rows`          | `sheetId`                                      | config 적용된 대상 행 반환 (필터 반영, 최대 200행 미리보기)                                                                                                                 |
+| `preview_messages`   | `sheetId`                                      | dryRun 파이프라인 실행 — 렌더된 메시지 목록과 결측/중복 경고 반환. **발송 없음**                                                                                            |
+| `send_notifications` | `sheetId`, `confirm: boolean`                  | `confirm=true` **그리고** `SEND_MODE=live`일 때만 실발송. 아니면 dry-run 결과 + 안내 반환                                                                                   |
+| `get_send_log`       | `sheetId`, `limit?: number`, `cursor?: string` | 발송 이력을 최신순으로 반환 (기본 200건, 최대 1000건). `hasMore=true`면 응답의 `nextCursor`를 다음 호출의 `cursor`로 넘겨 이어서 조회한다(정확한 hasMore — AR-015, GAP-006) |
 
 안전장치가 이중인 이유: 에이전트가 자율 실행 중 실수로 실발송하는 사고를 막기 위해, 도구 파라미터(대화 레벨)와 환경변수(프로세스 레벨) 둘 다 요구한다.
 
@@ -209,6 +260,9 @@ renderTemplate(template: string, values: Record<string, string>): RenderResult
 - **SemaphoreSmsProvider**: v0.1에서는 생성자에서 "Sender ID 등록 후 v0.2에서 활성화" 에러를 던지는 스텁만.
 - **SqliteSendLog**: `better-sqlite3`, 파일 경로 `SEND_LOG_PATH`(기본 `./data/sendlog.db`). unique 키
   `(sheet_id, tab, row_key, template_hash)` — 이 unique 제약이 곧 claim()의 원자성 경계다(§3).
+  `claim_token`(소유권 토큰)과 `committed`(0/1, claimed/sent 구분) 컬럼을 둔다. `close()`는 멱등이라
+  (better-sqlite3 자체 보장, 수동 검증됨) 여러 종료 경로(정상/SIGINT/SIGTERM/`exit`)에서 겹쳐
+  불려도 안전하다(AR-018/GAP-008).
 
 `npm run dev`/`npm run smoke`는 시작 시 `dotenv`로 `.env`를 로드한다(이미 설정된 실제 프로세스
 환경변수는 덮어쓰지 않음). `createServer()`를 단독 import하는 테스트 경로에서는 절대 로드하지

@@ -36,11 +36,13 @@ const pipelineRowDetailSchema = z.object({
   error: z.string().optional(),
 });
 
-/** preview_messages / send_notifications가 공유하는 core/pipeline.ts PipelineResult 형태 */
+/** preview_messages / send_notifications가 공유하는 core/pipeline.ts PipelineResult 형태.
+ * sent+failed+skipped+logFailed === details.length가 항상 성립한다(집계 불변식, GAP-002). */
 const pipelineResultShape = {
   sent: z.number(),
   failed: z.number(),
   skipped: z.number(),
+  logFailed: z.number(),
   details: z.array(pipelineRowDetailSchema),
 };
 
@@ -54,21 +56,26 @@ export const sendNotificationsOutputSchema = {
   notice: z.string().optional(),
 };
 
+// SendLog에는 claimed(예약됐지만 아직 확정 안 됨) 또는 sent(확정) 두 상태만 저장된다 — 시트에
+// 쓰는 4종 상태(sendStatusSchema)와는 별개다(core/types.ts SendLogEntryStatus, GAP-001/002).
+const sendLogEntryStatusSchema = z.enum(["claimed", "sent"]);
+
 const sendLogEntrySchema = z.object({
   sheetId: z.string(),
   tab: z.string(),
   rowKey: z.string(),
   templateHash: z.string(),
-  sendStatus: sendStatusSchema,
+  sendStatus: sendLogEntryStatusSchema,
   sentAt: z.string(),
   messageId: z.string().optional(),
-  error: z.string().optional(),
 });
 
-/** get_send_log 도구 출력 — SendLogEntry[]를 객체로 감쌈(MCP 출력 스키마는 최상위가 객체여야 함) */
+/** get_send_log 도구 출력 — SendLogListResult와 1:1. hasMore/nextCursor는 근사치가 아니라
+ * limit+1개를 조회해 계산한 정확한 값이다(GAP-006). */
 export const getSendLogOutputSchema = {
   entries: z.array(sendLogEntrySchema),
-  truncated: z.boolean(),
+  hasMore: z.boolean(),
+  nextCursor: z.string().optional(),
 };
 
 /** get_send_log 도구 입력의 limit — 이력이 무한정 쌓여도 응답이 무제한으로 커지지 않게 상한을 둔다
@@ -82,4 +89,13 @@ export const sendLogLimitSchema = z
   .describe(
     `반환할 최대 건수(최신순). 생략하면 ${String(DEFAULT_SEND_LOG_LIST_LIMIT)}건, ` +
       `최대 ${String(MAX_SEND_LOG_LIST_LIMIT)}건까지 지정할 수 있습니다.`,
+  );
+
+/** get_send_log 도구 입력의 cursor — 이전 호출의 nextCursor를 그대로 넘기면 다음(더 오래된)
+ * 페이지를 반환한다(GAP-006). */
+export const sendLogCursorSchema = z
+  .string()
+  .optional()
+  .describe(
+    "이전 get_send_log 응답의 nextCursor를 그대로 넘기면 다음(더 오래된) 페이지를 반환합니다.",
   );

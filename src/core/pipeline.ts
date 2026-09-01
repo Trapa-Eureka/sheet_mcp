@@ -43,6 +43,11 @@ export interface PipelineResult {
   sent: number;
   failed: number;
   skipped: number;
+  /** status==="sent_log_failed"인 행 수. sent/failed/skipped 어디에도 넣지 않는다 — "성공"도
+   * "실패"도 아닌 불확실한 상태를 다른 집계에 섞으면 그 집계의 의미가 흐려지기 때문이다. 대신
+   * sent+failed+skipped+logFailed는 항상 details.length와 같다(집계 불변식,
+   * docs/ADVERSARIAL_REVIEW_003_RESOLUTION_GAPS.md GAP-002). */
+  logFailed: number;
   details: PipelineRowDetail[];
 }
 
@@ -50,15 +55,18 @@ export interface PipelineResult {
  * subject+body **원본** 템플릿(렌더 전)의 sha256 앞 12자 — DESIGN §4-4단계.
  * 행 값이 아니라 템플릿 문자열 자체를 해시하므로, 같은 템플릿이면 모든 행이 같은 해시를 공유하고
  * 템플릿을 고치면(오타 수정 등) 해시가 바뀌어 재발송이 허용된다(의도된 동작).
- * subject/body 사이에 NUL을 끼워 "AB"+"C"와 "A"+"BC"처럼 이어붙였을 때 같아지는 경우를 막는다.
+ *
+ * subject와 body를 **각각 먼저 해시한 뒤 그 두 다이제스트를 합쳐 다시 해시**한다 — 구분자를 문자로
+ * 끼워 넣는 방식(예: 공백)은 "A "+"B"와 "A"+" B"처럼 경계에 그 구분자와 같은 문자가 있으면 서로
+ * 다른 (subject, body) 조합이 같은 바이트 시퀀스로 합쳐져 해시가 충돌한다
+ * (docs/ADVERSARIAL_REVIEW_003_RESOLUTION_GAPS.md REG-001 — 실제로 공백 구분자에서 재현됨).
+ * sha256 다이제스트는 항상 고정 64자(hex)이므로, 두 다이제스트를 이어붙이는 경계는 내용에 따라
+ * 흔들리지 않아 이 문제가 원천적으로 발생하지 않는다.
  */
 export function computeTemplateHash(subjectTemplate: string, bodyTemplate: string): string {
-  return createHash("sha256")
-    .update(subjectTemplate)
-    .update(" ")
-    .update(bodyTemplate)
-    .digest("hex")
-    .slice(0, 12);
+  const subjectDigest = createHash("sha256").update(subjectTemplate).digest("hex");
+  const bodyDigest = createHash("sha256").update(bodyTemplate).digest("hex");
+  return createHash("sha256").update(subjectDigest).update(bodyDigest).digest("hex").slice(0, 12);
 }
 
 /**
@@ -252,11 +260,20 @@ export class SendPipeline {
 
     // 원자적 claim — 같은 배치의 중복 rowKey, 동시에 실행 중인 다른 프로세스, 과거 성공 전부
     // 이 한 번의 호출로 막는다(AR-011). claim에 실패하면 provider를 아예 호출하지 않는다.
-    const claimed = this.deps.sendLog.claim(sheetId, tab, row.rowKey, templateHash, nowIso);
-    if (!claimed) {
+    const claim = this.deps.sendLog.claim(sheetId, tab, row.rowKey, templateHash, nowIso);
+    if (!claim.claimed) {
       row.status = "skipped_duplicate";
       return;
     }
+    if (claim.token === undefined) {
+      // SendLog 구현이 claimed=true인데 token을 안 준 경우 — 인터페이스 계약 위반. 여기서 잡아야
+      // "token이 undefined인 채로 commit/release에 넘어가는" 더 헷갈리는 실패를 막을 수 있다.
+      throw new Error(
+        `내부 오류: SendLog.claim()이 claimed=true인데 token이 없습니다 (rowKey='${row.rowKey}'). ` +
+          "SendLog 구현의 버그입니다.",
+      );
+    }
+    const token = claim.token;
 
     try {
       const result = await this.deps.provider.send({
@@ -274,6 +291,7 @@ export class SendPipeline {
             tab,
             row.rowKey,
             templateHash,
+            token,
             nowIso,
             result.messageId,
           );
@@ -295,15 +313,41 @@ export class SendPipeline {
           );
         }
       } else {
-        this.deps.sendLog.release(sheetId, tab, row.rowKey, templateHash);
         row.status = "failed";
         row.error =
           result.error ?? `${this.deps.provider.channel} 발송이 실패했습니다 (사유 미상).`;
+        this.safeRelease(sheetId, tab, templateHash, token, row);
       }
     } catch (err) {
-      this.deps.sendLog.release(sheetId, tab, row.rowKey, templateHash);
       row.status = "failed";
       row.error = `발송 중 예외가 발생했습니다: ${err instanceof Error ? err.message : String(err)}`;
+      this.safeRelease(sheetId, tab, templateHash, token, row);
+    }
+  }
+
+  /**
+   * release()가 그 자체로 실패해도(DB 잠금·IO 오류 등) 절대 밖으로 던지지 않는다 — 예전에는 이
+   * release() 실패가 attemptSend() 밖으로 그대로 전파돼 run()의 for 루프를 중단시켜 "한 행 실패가
+   * 나머지 배치를 막지 않는다"는 핵심 계약을 깼다(docs/ADVERSARIAL_REVIEW_003_RESOLUTION_GAPS.md
+   * GAP-003). release가 실패하면 이 행의 claim이 안 풀려 다음 실행에서 재시도가 막힐 수 있다는
+   * 사실을 error 메시지와 stderr에 남겨 사람이 forceReleaseStaleClaim()으로 복구할 수 있게 한다.
+   */
+  private safeRelease(
+    sheetId: string,
+    tab: string,
+    templateHash: string,
+    token: string,
+    row: WorkingRow,
+  ): void {
+    try {
+      this.deps.sendLog.release(sheetId, tab, row.rowKey, templateHash, token);
+    } catch (releaseErr) {
+      const releaseErrMessage =
+        releaseErr instanceof Error ? releaseErr.message : String(releaseErr);
+      row.error = `${row.error ?? ""} (추가로 예약 해제도 실패해 재시도가 자동으로 막혀 있을 수 있습니다: ${releaseErrMessage}. 수동 확인이 필요합니다.)`;
+      console.error(
+        `[sheet-mcp] release 실패: sheetId=${sheetId} tab=${tab} rowKey=${row.rowKey} — ${releaseErrMessage}`,
+      );
     }
   }
 
@@ -323,6 +367,7 @@ export class SendPipeline {
       sent: details.filter((d) => d.status === "sent").length,
       failed: details.filter((d) => d.status === "failed").length,
       skipped: details.filter((d) => d.status === "skipped_duplicate").length,
+      logFailed: details.filter((d) => d.status === "sent_log_failed").length,
       details,
     };
   }

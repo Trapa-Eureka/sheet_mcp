@@ -22,6 +22,7 @@ import {
   getSendLogOutputSchema,
   previewMessagesOutputSchema,
   readRowsOutputSchema,
+  sendLogCursorSchema,
   sendLogLimitSchema,
   sendNotificationsOutputSchema,
   sheetIdSchema,
@@ -115,19 +116,20 @@ export function createServer(deps: SendPipelineDeps): McpServer {
       title: "발송 이력 조회",
       description:
         "이 sheetId에 대한 발송 이력을 최신순으로 반환한다 (기본 " +
-        `${String(DEFAULT_SEND_LOG_LIST_LIMIT)}건, limit으로 조정 가능).`,
-      inputSchema: { sheetId: sheetIdSchema, limit: sendLogLimitSchema },
+        `${String(DEFAULT_SEND_LOG_LIST_LIMIT)}건, limit으로 조정 가능). hasMore=true면 ` +
+        "nextCursor를 다음 호출의 cursor로 넘겨 이어서 조회할 수 있다.",
+      inputSchema: {
+        sheetId: sheetIdSchema,
+        limit: sendLogLimitSchema,
+        cursor: sendLogCursorSchema,
+      },
       outputSchema: getSendLogOutputSchema,
     },
-    ({ sheetId, limit }) => {
-      const effectiveLimit = limit ?? DEFAULT_SEND_LOG_LIST_LIMIT;
-      const entries = deps.sendLog.list(sheetId, { limit: effectiveLimit });
-      // entries.length가 effectiveLimit에 도달했다면 더 있을 수 있다는 뜻이다(정확한 total count는
-      // 조회하지 않는 근사치 — AR-015. 정밀한 hasMore가 필요하면 limit+1개를 조회해 비교해야 한다).
-      const payload = { entries, truncated: entries.length >= effectiveLimit };
+    ({ sheetId, limit, cursor }) => {
+      const payload = deps.sendLog.list(sheetId, { limit, cursor });
       return {
         content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
-        structuredContent: payload,
+        structuredContent: { ...payload },
       };
     },
   );
@@ -164,10 +166,21 @@ async function main(): Promise<void> {
 
   const { deps, sendLog } = buildProductionDeps();
   const server = createServer(deps);
-  // 프로세스가 어떤 경로로 끝나든(부모가 stdin을 닫아 자연 종료되는 경우 포함) DB 파일 핸들을
-  // 정리한다 — AR-018.
+  // 프로세스가 어떤 경로로 끝나든(부모가 stdin을 닫아 자연 종료되는 경우, SIGINT/SIGTERM 둘 다)
+  // DB 파일 핸들을 정리한다 — AR-018/GAP-008. better-sqlite3의 close()는 이미 멱등이라
+  // (두 번 불러도 에러 없음, 수동 검증 완료) 여러 경로에서 겹쳐 불려도 안전하다.
+  // SIGINT/SIGTERM을 명시적으로 잡지 않으면 'exit' 핸들러가 언제 도는지가 Node 버전/환경마다
+  // 달라질 수 있어, 신호 경로는 별도로 확실하게 처리한다.
   process.on("exit", () => {
     sendLog.close();
+  });
+  process.on("SIGINT", () => {
+    sendLog.close();
+    process.exit(0);
+  });
+  process.on("SIGTERM", () => {
+    sendLog.close();
+    process.exit(0);
   });
 
   await server.connect(new StdioServerTransport());
