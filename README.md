@@ -22,15 +22,43 @@
 이 프로젝트는 **문서 → 에이전트 구현 → 검증** 순서로 진행한다 (`docs/WORKFLOW.md` 참조).
 사람(Jin)은 스펙·설계·리뷰·실발송 승인을 맡고, 코드 작성은 Claude Code 에이전트가 `docs/TASKS.md`의 태스크 단위로 수행한다. 모든 태스크의 공통 완료 조건은 `npm run check` 통과다.
 
-## 퀵스타트
+## 퀵스타트 (개발/검증)
 
 ```bash
 npm install
-npm run check        # typecheck + lint + format:check + test — 에이전트/사람 공통 게이트
-npm run dev          # MCP 서버 stdio 실행 — T8 전까지는 미구현 안내만 출력하는 플레이스홀더
+npm run check         # typecheck + lint + format:check + test — 에이전트/사람 공통 게이트
+npm run dev           # MCP 서버 stdio 실행 (.env 시크릿 필요 — 아래 "실행 절차" 참고)
 ```
 
-Claude Code 연결은 `docs/DESIGN.md`의 "Claude Code 연결" 절 참조 (T8 이후 유효).
+## 실행 절차 (실제 시트/이메일로 써보기)
+
+1. `.env.example`을 `.env`로 복사하고 `GOOGLE_SERVICE_ACCOUNT_JSON`/`RESEND_API_KEY`/`MAIL_FROM`을 채운다.
+2. 아래 "예시 시트 템플릿"대로 구글시트를 만들고 서비스 계정 이메일에 편집자로 공유한 뒤, `.env`에 `SMOKE_SHEET_ID=<시트 ID>`를 넣는다.
+3. `npm run smoke`로 미리보기를 확인한다 (기본값은 항상 dry-run — 실제 발송 없음).
+4. 실제 발송하려면 `SEND_MODE=live SMOKE_CONFIRM_SEND=1 npm run smoke` (대상 행이 정확히 1개일 때만 발송됨).
+5. Claude Code에서는 이 레포를 열고 `/mcp`로 `sheet-mcp` 연결을 확인한다 (`.mcp.json` 커밋됨, `docs/DESIGN.md` §8).
+
+## 예시 시트 템플릿
+
+`notify_config` 탭(A열=키, B열=값)과 데이터 탭 하나로 구성한다 — 전체 키 목록/규칙은 `docs/DESIGN.md` §2.
+
+**notify_config 탭 최소 구성**
+
+| A                  | B                                           |
+| ------------------ | ------------------------------------------- |
+| `data_tab`         | `customers`                                 |
+| `id_column`        | `customer_id`                               |
+| `recipient_column` | `email`                                     |
+| `channel`          | `email`                                     |
+| `subject_template` | `[{{shop}}] 결제 안내`                      |
+| `body_template`    | `{{name}}님, {{amount}} 결제 부탁드립니다.` |
+| `filter_column`    | `status`                                    |
+| `filter_value`     | `unpaid`                                    |
+
+**데이터 탭**: 1행은 헤더(=템플릿 변수명), 2행부터 데이터. `fixtures/sheets/collections.json`이
+실제 예시(12행, 타갈로그/영어 혼용 미수금 시나리오)다 — 같은 컬럼 구성으로 구글시트에 옮기면
+스모크용으로 바로 쓸 수 있다. 발송 결과는 이 탭 끝에 `_send_status`/`_sent_at`/`_message_id`/`_error`
+4개 컬럼으로 자동 기록되며, 사용자 데이터 컬럼은 절대 수정되지 않는다.
 
 ## 상태
 

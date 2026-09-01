@@ -68,10 +68,16 @@
   미달 라인은 전부 "내부 오류(버그 리포트)" 방어 가드(config.ts required(), pipeline.ts finalizeStatus/toStatusUpdate)로,
   정상 흐름에서는 도달 불가능해 의도적으로 테스트하지 않음.
 
-### T10 — 스모크 스크립트 + 문서 갱신 · 상태: TODO · 의존: T8
+### T10 — 스모크 스크립트 + 문서 갱신 · 상태: DONE(2026-09-01) · 의존: T8
 
 - 목표: `scripts/smoke.ts`(실시트 1개, 실이메일 1건, live 게이트 준수), README 퀵스타트 실제 명령으로 갱신, 예시 시트 템플릿 설명.
-- 완료 기준: [ ] smoke가 dry_run에서 발송 없이 미리보기 출력 [ ] 사람 실행 절차가 README에 5줄 이내로 [ ] check 통과
+- 완료 기준: [x] smoke가 dry_run에서 발송 없이 미리보기 출력 [x] 사람 실행 절차가 README에 5줄 이내로 [x] check 통과
+- smoke.ts는 이제 core/pipeline.ts의 SendPipeline을 실제 어댑터로 조립해 dry-run 미리보기 →
+  (SEND_MODE=live && SMOKE_CONFIRM_SEND=1 && 대상 1행일 때만) 실발송까지 전체 흐름을 수행한다.
+  대상이 2행 이상이면 실수로 여러 명에게 발송되는 사고를 막기 위해 중단한다.
+  실제 Google/Resend 자격증명 없이는 이 환경에서 직접 실행할 수 없어(사람 전용 수동 스모크),
+  동일 분기 로직을 목으로 재현한 임시 스크립트로 5개 시나리오(기본/SEND_MODE만/confirm만/
+  대상 2행/둘 다 충족)를 검증 후 삭제함.
 
 ---
 
