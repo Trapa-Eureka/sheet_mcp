@@ -45,7 +45,7 @@
 - 목표: `MockNotificationProvider`(failFor 주입), `ResendEmailProvider`(fetch 1콜), `SemaphoreSmsProvider` 스텁(생성 시 안내 에러).
 - 완료 기준: [ ] 목의 기록/실패 주입 테스트 [ ] Resend 어댑터는 fetch를 주입받아 **목 fetch로** 요청 형태 테스트 [ ] check 통과
 
-### T6 (레인 D) — SendLog · 상태: TODO · 의존: T1
+### T6 (레인 D) — SendLog · 상태: DONE(2026-09-01) · 의존: T1
 
 - 목표: `InMemorySendLog` + `SqliteSendLog`(better-sqlite3, unique 키는 DESIGN §6).
 - 완료 기준: [ ] 임시 파일 DB로 wasSent/record/list 테스트 (파일 IO는 허용, 네트워크 아님) [ ] unique 충돌 시 조용히 무시 아님—명시 처리 [ ] check 통과
