@@ -12,7 +12,7 @@
 
 ---
 
-### T0 — 프로젝트 스캐폴딩 · 상태: TODO
+### T0 — 프로젝트 스캐폴딩 · 상태: DONE(2026-09-01)
 - 목표: TS strict + ESLint + Prettier + Vitest + 스크립트 일체. `src/`는 빈 진입점만.
 - 산출: `package.json`(스크립트: check/test/test:watch/typecheck/lint/dev/smoke), `tsconfig.json`(strict, noUncheckedIndexedAccess), `.eslintrc` 계열, `vitest.config.ts`, `.env.example`, `.gitignore`(.env, data/)
 - 완료 기준: [ ] `npm run check` 통과 [ ] 더미 테스트 1개 실행됨 [ ] `git init` + 첫 커밋
