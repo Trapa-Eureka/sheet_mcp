@@ -38,7 +38,7 @@
 - 목표: `renderTemplate` 순수 함수 (DESIGN §3). 결측 키는 throw가 아니라 `missing[]` 반환.
 - 완료 기준: [ ] 치환/결측/이스케이프 불필요 확인/유니코드 케이스 포함 `tests/template.test.ts` 8케이스 이상 [ ] check 통과
 
-### T5 (레인 C) — NotificationProvider + 어댑터 · 상태: TODO · 의존: T1
+### T5 (레인 C) — NotificationProvider + 어댑터 · 상태: DONE(2026-09-01) · 의존: T1
 
 - 목표: `MockNotificationProvider`(failFor 주입), `ResendEmailProvider`(fetch 1콜), `SemaphoreSmsProvider` 스텁(생성 시 안내 에러).
 - 완료 기준: [ ] 목의 기록/실패 주입 테스트 [ ] Resend 어댑터는 fetch를 주입받아 **목 fetch로** 요청 형태 테스트 [ ] check 통과
