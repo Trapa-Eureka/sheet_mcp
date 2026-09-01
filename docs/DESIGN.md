@@ -325,6 +325,11 @@ SMOKE_CONFIRM_SEND=            # 1이면 smoke가 실발송에 동의(SEND_MODE=
 
 ## 8. Claude Code 연결
 
+두 가지 설치 경로가 있다 — 이 레포를 직접 개발/기여하는 사람은 A, 이미 만들어진 서버를 그냥
+쓰기만 하려는 사람(팀 동료, SME 사용자)은 B를 쓴다.
+
+### A. 레포 clone (개발/기여용)
+
 프로젝트 스코프로 등록해 `.mcp.json`을 레포에 커밋한다(팀/미래의 나와 공유).
 
 ```bash
@@ -340,6 +345,20 @@ claude mcp add sheet-mcp --scope project -- npx tsx src/server.ts
   }
 }
 ```
+
+### B. npm 패키지 (`npx sheet-mcp`) — clone 없이 쓰기
+
+```bash
+claude mcp add sheet-mcp -- npx -y sheet-mcp
+```
+
+레포를 clone하지 않고도 `npx`가 알아서 패키지를 받아 실행한다. 시크릿(`.env`)은 여전히 실행하는
+디렉터리에 직접 준비해야 한다 — 패키지 안에는 시크릿이 들어 있지 않다(§7).
+
+> **아직 `npm publish`를 하지 않았다** (`docs/TASKS.md` T11~T13, `npm publish` 자체는 별도 승인
+> 필요 — 공개 레지스트리 노출은 되돌리기 어려운 동작이라 준비만 해 두고 실행은 보류한 상태).
+> 그 전까지 `npx sheet-mcp`/`npx -y sheet-mcp`는 레지스트리에 이 이름의 패키지가 없어 동작하지
+> **않는다**. 지금은 위 A(레포 clone) 방법만 실제로 쓸 수 있다. publish 이후에는 이 문단을 지운다.
 
 연결 확인은 Claude Code 안에서 `/mcp`. 시크릿은 `.mcp.json`에 넣지 않고 셸 환경/.env로 공급한다.
 

@@ -38,6 +38,9 @@ npm run dev           # MCP 서버 stdio 실행 (.env 시크릿 필요 — 아�
 4. 실제 발송하려면 `SEND_MODE=live SMOKE_CONFIRM_SEND=1 npm run smoke` (대상 행이 정확히 1개일 때만 발송됨).
 5. Claude Code에서는 이 레포를 열고 `/mcp`로 `sheet-mcp` 연결을 확인한다 (`.mcp.json` 커밋됨, `docs/DESIGN.md` §8).
 
+레포를 clone하지 않고 `npx sheet-mcp`로 바로 쓰는 방법도 준비 중이다(`docs/DESIGN.md` §8-B) —
+**단 아직 `npm publish`를 하지 않아 지금은 동작하지 않는다.** 그 전까지는 위 clone 방식만 쓸 수 있다.
+
 ## 예시 시트 템플릿
 
 `notify_config` 탭(A열=키, B열=값)과 데이터 탭 하나로 구성한다 — 전체 키 목록/규칙은 `docs/DESIGN.md` §2.

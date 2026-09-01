@@ -145,19 +145,25 @@
   `tsx src/server.ts`와 동일한 fail-fast 에러·종료 코드 1을 반환함을 확인. `npm run check` 175 tests
   (기존 174 + 회귀 가드 1) 전부 통과.
 
-### T13 — 설치 방식 문서 갱신 · 상태: TODO · 의존: T12
+### T13 — 설치 방식 문서 갱신 · 상태: DONE(2026-09-01) · 의존: T12
 
 - 목표: `npx sheet-mcp` 설치 경로를 `CLAUDE.md`/`docs/DESIGN.md` §8/`README.md`에 반영한다(가드레일
   5: 설계 변경은 코드보다 docs를 먼저/함께 고친다). 기존 "레포 clone" 경로도 계속 유효하므로 두
   방법 다 남긴다.
 - 완료 기준:
-  [ ] `docs/DESIGN.md` §8에 `claude mcp add sheet-mcp -- npx -y sheet-mcp` 예시 추가(기존 clone 방식과
+  [x] `docs/DESIGN.md` §8에 `claude mcp add sheet-mcp -- npx -y sheet-mcp` 예시 추가(기존 clone 방식과
   나란히, 어떤 걸 언제 쓰는지 한 줄 설명 포함)
-  [ ] `README.md` 퀵스타트/실행 절차에 npx 설치 경로 반영
-  [ ] `CLAUDE.md` 스택 절에 배포 방식(빌드+npm) 한 줄 추가
-  [ ] 아직 `npm publish`를 하지 않았다는 사실과, 그 전까지는 `npx sheet-mcp`가 동작하지 않는다는
+  [x] `README.md` 퀵스타트/실행 절차에 npx 설치 경로 반영
+  [x] `CLAUDE.md` 스택 절에 배포 방식(빌드+npm) 한 줄 추가
+  [x] 아직 `npm publish`를 하지 않았다는 사실과, 그 전까지는 `npx sheet-mcp`가 동작하지 않는다는
   점을 두 문서 모두에 명확히 표시(문서가 앞서가서 안 되는 기능을 있는 것처럼 설명하지 않는다)
-  [ ] check 통과
+  [x] check 통과
+- `docs/DESIGN.md` §8을 A(레포 clone, 개발/기여용)/B(`npx sheet-mcp`, clone 없이 쓰기) 두 절로
+  나누고, B 절에 "아직 publish 전이라 지금은 동작하지 않는다"는 경고를 명확히 넣었다. `README.md`
+  "실행 절차"의 기존 5단계는 그대로 두고(T10 완료 기준 "5줄 이내" 유지) 그 아래 별도 문단으로
+  npx 경로와 동일한 경고를 추가했다. `CLAUDE.md`는 스택 절 한 줄 + 명령어 절에 `npm run build` +
+  프루닝 로그 항목을 추가했다. T11~T13 전체가 아직 `npm publish` 실행 전 준비 단계이므로, 실제
+  퍼블리시는 이후 별도로 사용자 승인을 받아 진행한다.
 
 ---
 
