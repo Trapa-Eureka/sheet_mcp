@@ -17,7 +17,8 @@
     "format:check": "prettier --check .",
     "dev": "tsx src/server.ts",
     "smoke": "tsx scripts/smoke.ts",
-    "recover:stale-claim": "tsx scripts/recoverStaleClaim.ts"
+    "recover:stale-claim": "tsx scripts/recoverStaleClaim.ts",
+    "build": "tsc -p tsconfig.build.json && node scripts/postbuild.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",

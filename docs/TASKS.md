@@ -97,16 +97,22 @@
 - 각 태스크 완료 후 다음 태스크로 넘어가기 전에 사람 확인을 받는다(세션 규칙, 자동 연속 진행 안 함).
 - 의존 그래프: `T10 → T11 → T12 → T13`
 
-### T11 — 빌드 파이프라인 · 상태: TODO · 의존: T10
+### T11 — 빌드 파이프라인 · 상태: DONE(2026-09-01) · 의존: T10
 
 - 목표: `tsc` 기반으로 `src/`를 `dist/`에 순수 JS로 컴파일하는 빌드 스크립트를 추가한다. 배포판은
   `tsx`/devDependencies 없이 `node dist/server.js`만으로 실행돼야 한다.
 - 완료 기준:
-  [ ] `tsconfig.build.json`(또는 동등한 설정)으로 `dist/`에 outDir 지정, 테스트 파일은 빌드 대상에서 제외
-  [ ] `npm run build` 스크립트 추가
-  [ ] 빌드된 `dist/server.js` 최상단에 `#!/usr/bin/env node` shebang이 있다
-  [ ] `.env` 없이 `node dist/server.js` 실행 시 기존 `tsx src/server.ts`와 동일한 fail-fast 에러가 난다(동작 동치성 확인)
-  [ ] `npm run check` 통과(기존 vitest는 여전히 `src/`를 대상으로 함 — 변경 없음)
+  [x] `tsconfig.build.json`(또는 동등한 설정)으로 `dist/`에 outDir 지정, 테스트 파일은 빌드 대상에서 제외
+  [x] `npm run build` 스크립트 추가
+  [x] 빌드된 `dist/server.js` 최상단에 `#!/usr/bin/env node` shebang이 있다
+  [x] `.env` 없이 `node dist/server.js` 실행 시 기존 `tsx src/server.ts`와 동일한 fail-fast 에러가 난다(동작 동치성 확인)
+  [x] `npm run check` 통과(기존 vitest는 여전히 `src/`를 대상으로 함 — 변경 없음)
+- `tsconfig.build.json`은 `tsconfig.json`을 extends하고 `noEmit:false`/`outDir:dist`/`rootDir:src`만
+  덮어쓴다 — `include`를 `["src"]`로 좁혀 tests/scripts는 애초에 컴파일 대상에서 빠진다.
+  `scripts/postbuild.mjs`(plain Node ESM, tsx 없이 실행)가 `dist/server.js` 맨 앞에 shebang을 붙인다
+  (tsc는 shebang을 보존하지 않음). `node dist/server.js`와 `npx tsx src/server.ts`를 각각 `.env` 없이
+  실행해 완전히 동일한 에러 메시지·종료 코드(`GOOGLE_SERVICE_ACCOUNT_JSON 환경변수가 없습니다...`,
+  exit 1)를 확인함(동작 동치성 수동 검증).
 
 ### T12 — 배포 메타데이터 + 로컬 패키지 검증 · 상태: TODO · 의존: T11
 
