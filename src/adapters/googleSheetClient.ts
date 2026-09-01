@@ -1,12 +1,16 @@
 // SheetClient의 실제 구현 — googleapis + 서비스 계정 인증.
-// 설계: docs/DESIGN.md §6(어댑터 메모), §2(시트 규약). 테스트는 작성하지 않는다(네트워크 금지,
-// docs/TESTING.md §1) — 검증은 scripts/smoke.ts로 사람이 수동 실행한다 (docs/TASKS.md T3).
+// 설계: docs/DESIGN.md §6(어댑터 메모), §2(시트 규약).
+// 실제 네트워크를 타는 테스트는 작성하지 않는다(네트워크 금지, docs/TESTING.md §1) — 대신
+// Sheets API 호출부만 얇은 인터페이스(SheetsApiLike)로 분리해 주입 가능하게 하고, 그 목으로
+// range 문자열·요청 바디 형태를 검증하는 계약 테스트를 둔다(tests/googleSheetClient.test.ts,
+// docs/ADVERSARIAL_REVIEW_002.md AR-008). 실제 인증/읽기 경로 통합 확인은 scripts/smoke.ts로
+// 사람이 수동 실행한다 (docs/TASKS.md T3).
 //
 // 시트 공유 방식(v0.1): 대상 스프레드시트를 서비스 계정 이메일(JSON의 client_email)에
 // "편집자"로 공유해야 한다.
 
 import { readFileSync } from "node:fs";
-import { google, type sheets_v4 } from "googleapis";
+import { google } from "googleapis";
 import { z } from "zod";
 import type { SheetClient, SheetRow, StatusUpdate } from "../core/types.js";
 
@@ -21,9 +25,40 @@ const serviceAccountKeySchema = z
   })
   .passthrough();
 
+/**
+ * 이 어댑터가 실제로 쓰는 Sheets API 표면만 좁게 정의한 인터페이스.
+ * googleapis의 `sheets_v4.Sheets`는 구조적으로 이 인터페이스를 만족하므로 실제 클라이언트를
+ * 그대로 대입할 수 있고, 테스트는 이 좁은 표면만 흉내내는 목을 주입하면 된다(AR-008).
+ */
+export interface SheetsApiLike {
+  spreadsheets: {
+    values: {
+      get(params: {
+        spreadsheetId: string;
+        range: string;
+      }): Promise<{ data: { values?: unknown[][] | null } }>;
+      update(params: {
+        spreadsheetId: string;
+        range: string;
+        valueInputOption: string;
+        requestBody: { values: unknown[][] };
+      }): Promise<unknown>;
+      batchUpdate(params: {
+        spreadsheetId: string;
+        requestBody: {
+          valueInputOption: string;
+          data: Array<{ range: string; values: unknown[][] }>;
+        };
+      }): Promise<unknown>;
+    };
+  };
+}
+
 export interface GoogleSheetClientOptions {
   /** 기본값: 환경변수 GOOGLE_SERVICE_ACCOUNT_JSON */
   serviceAccountKeyPath?: string;
+  /** 테스트 전용: 실제 인증 없이 Sheets API 호출부를 직접 주입한다 (AR-008) */
+  sheetsApi?: SheetsApiLike;
 }
 
 /** Sheets API 셀 값은 string/number/boolean이 보통이지만 타입이 any라 안전하게 문자열화한다 */
@@ -45,11 +80,26 @@ function columnIndexToLetter(index: number): string {
   return letters;
 }
 
+/**
+ * A1 표기법에 맞게 시트(탭) 이름을 인용한다. 공백·작은따옴표·`!` 등 특수문자가 포함된 이름은
+ * 인용하지 않으면 range 파싱이 실패하거나 다른 범위로 오해석될 수 있다. 단순한 이름을 인용해도
+ * A1 표기법상 항상 유효하므로 예외 없이 전부 인용한다(AR-007). 내부 `'`는 `''`로 이스케이프.
+ */
+function quoteSheetName(tab: string): string {
+  return `'${tab.replace(/'/g, "''")}'`;
+}
+
 export class GoogleSheetClient implements SheetClient {
-  private readonly keyPath: string;
-  private sheetsApi: sheets_v4.Sheets | null = null;
+  private readonly keyPath: string | undefined;
+  private sheetsApi: SheetsApiLike | null;
 
   constructor(options: GoogleSheetClientOptions = {}) {
+    if (options.sheetsApi) {
+      this.sheetsApi = options.sheetsApi;
+      this.keyPath = undefined;
+      return;
+    }
+
     const keyPath = options.serviceAccountKeyPath ?? process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
     if (!keyPath) {
       throw new Error(
@@ -58,19 +108,26 @@ export class GoogleSheetClient implements SheetClient {
       );
     }
     this.keyPath = keyPath;
+    this.sheetsApi = null;
   }
 
   // 전부 동기 작업(파일 읽기/JSON 파싱/인증 클라이언트 생성)이라 async가 필요 없다.
   // require-await 규칙 회피가 아니라 실제로 비동기 IO가 없는 함수다.
-  private getSheetsApi(): sheets_v4.Sheets {
+  private getSheetsApi(): SheetsApiLike {
     if (this.sheetsApi) return this.sheetsApi;
+
+    // 생성자에서 sheetsApi를 주입하지 않았다면 keyPath는 반드시 존재한다(생성자에서 보장).
+    const keyPath = this.keyPath;
+    if (keyPath === undefined) {
+      throw new Error("내부 오류: GoogleSheetClient에 keyPath도 sheetsApi도 없습니다.");
+    }
 
     let raw: string;
     try {
-      raw = readFileSync(this.keyPath, "utf-8");
+      raw = readFileSync(keyPath, "utf-8");
     } catch (err) {
       throw new Error(
-        `서비스 계정 키 파일을 읽을 수 없습니다: '${this.keyPath}'. GOOGLE_SERVICE_ACCOUNT_JSON ` +
+        `서비스 계정 키 파일을 읽을 수 없습니다: '${keyPath}'. GOOGLE_SERVICE_ACCOUNT_JSON ` +
           `경로가 올바른지, 파일이 존재하는지 확인하세요. (${err instanceof Error ? err.message : String(err)})`,
       );
     }
@@ -80,7 +137,7 @@ export class GoogleSheetClient implements SheetClient {
       parsed = JSON.parse(raw);
     } catch {
       throw new Error(
-        `서비스 계정 키 파일 '${this.keyPath}'이 올바른 JSON이 아닙니다. Google Cloud Console에서 ` +
+        `서비스 계정 키 파일 '${keyPath}'이 올바른 JSON이 아닙니다. Google Cloud Console에서 ` +
           "발급받은 서비스 계정 키 JSON 파일인지 확인하세요.",
       );
     }
@@ -88,7 +145,7 @@ export class GoogleSheetClient implements SheetClient {
     const result = serviceAccountKeySchema.safeParse(parsed);
     if (!result.success) {
       throw new Error(
-        `서비스 계정 키 파일 '${this.keyPath}'에 client_email/private_key가 없습니다. ` +
+        `서비스 계정 키 파일 '${keyPath}'에 client_email/private_key가 없습니다. ` +
           "Google Cloud Console > IAM 및 관리자 > 서비스 계정에서 키를 다시 발급받으세요.",
       );
     }
@@ -102,7 +159,7 @@ export class GoogleSheetClient implements SheetClient {
     const sheets = this.getSheetsApi();
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: sheetId,
-      range: "notify_config!A:B",
+      range: `${quoteSheetName("notify_config")}!A:B`,
     });
 
     const config: Record<string, string> = {};
@@ -121,7 +178,7 @@ export class GoogleSheetClient implements SheetClient {
     const sheets = this.getSheetsApi();
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: sheetId,
-      range: tab,
+      range: quoteSheetName(tab),
     });
 
     const values: unknown[][] = res.data.values ?? [];
@@ -138,14 +195,10 @@ export class GoogleSheetClient implements SheetClient {
     });
   }
 
-  private async readHeader(
-    sheets: sheets_v4.Sheets,
-    sheetId: string,
-    tab: string,
-  ): Promise<string[]> {
+  private async readHeader(sheets: SheetsApiLike, sheetId: string, tab: string): Promise<string[]> {
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: sheetId,
-      range: `${tab}!1:1`,
+      range: `${quoteSheetName(tab)}!1:1`,
     });
     const headerRow: unknown[] = res.data.values?.[0] ?? [];
     return headerRow.map((cell) => cellToString(cell));
@@ -160,7 +213,7 @@ export class GoogleSheetClient implements SheetClient {
     const startColumnLetter = columnIndexToLetter(header.length);
     await sheets.spreadsheets.values.update({
       spreadsheetId: sheetId,
-      range: `${tab}!${startColumnLetter}1`,
+      range: `${quoteSheetName(tab)}!${startColumnLetter}1`,
       valueInputOption: "RAW",
       requestBody: { values: [missing] },
     });
@@ -190,29 +243,31 @@ export class GoogleSheetClient implements SheetClient {
       _error: columnLetterFor("_error"),
     };
 
+    const quotedTab = quoteSheetName(tab);
+
     // sentAt/messageId/error 결측은 "지운다"가 아니라 "건드리지 않는다" (DESIGN §3 StatusUpdate,
     // InMemorySheetClient와 동일한 계약 — 감사 기록을 보존하기 위해 해당 셀은 아예 쓰지 않는다).
-    const data: sheets_v4.Schema$ValueRange[] = [];
+    const data: Array<{ range: string; values: unknown[][] }> = [];
     for (const update of updates) {
       data.push({
-        range: `${tab}!${columnLetters._send_status}${String(update.rowIndex)}`,
+        range: `${quotedTab}!${columnLetters._send_status}${String(update.rowIndex)}`,
         values: [[update.sendStatus]],
       });
       if (update.sentAt !== undefined) {
         data.push({
-          range: `${tab}!${columnLetters._sent_at}${String(update.rowIndex)}`,
+          range: `${quotedTab}!${columnLetters._sent_at}${String(update.rowIndex)}`,
           values: [[update.sentAt]],
         });
       }
       if (update.messageId !== undefined) {
         data.push({
-          range: `${tab}!${columnLetters._message_id}${String(update.rowIndex)}`,
+          range: `${quotedTab}!${columnLetters._message_id}${String(update.rowIndex)}`,
           values: [[update.messageId]],
         });
       }
       if (update.error !== undefined) {
         data.push({
-          range: `${tab}!${columnLetters._error}${String(update.rowIndex)}`,
+          range: `${quotedTab}!${columnLetters._error}${String(update.rowIndex)}`,
           values: [[update.error]],
         });
       }

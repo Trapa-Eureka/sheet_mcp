@@ -48,6 +48,26 @@ describe("renderTemplate", () => {
     expect(result).toEqual({ text: "Maria님 안녕하세요.", missing: [] });
   });
 
+  it("한글/타갈로그/공백/하이픈이 섞인 시트 헤더명도 키로 인식하고 치환한다 (AR-006)", () => {
+    const result = renderTemplate("{{고객명}} / {{customer-name}} / {{shop name}}", {
+      고객명: "홍길동",
+      "customer-name": "A",
+      "shop name": "ABC Trading",
+    });
+    expect(result).toEqual({
+      text: "홍길동 / A / ABC Trading",
+      missing: [],
+    });
+  });
+
+  it("비ASCII/특수문자 키가 결측이어도 정상적으로 missing에 잡힌다 (AR-006)", () => {
+    const result = renderTemplate("{{고객명}}님, {{customer-name}} 확인", { 고객명: "홍길동" });
+    expect(result).toEqual({
+      text: "홍길동님, {{customer-name}} 확인",
+      missing: ["customer-name"],
+    });
+  });
+
   it("잘못된 형태(중괄호 짝 안 맞음)는 플레이스홀더로 인식하지 않고 그대로 둔다", () => {
     const result = renderTemplate("{name}} 그리고 {{amount}", { name: "x", amount: "y" });
     expect(result).toEqual({ text: "{name}} 그리고 {{amount}", missing: [] });

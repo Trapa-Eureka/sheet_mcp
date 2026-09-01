@@ -35,7 +35,31 @@ async function main(): Promise<void> {
 
   console.log(`[smoke] readRows(${sheetId}, ${dataTab}) 호출 중...`);
   const rows = await client.readRows(sheetId, dataTab);
-  console.log(`[smoke] ${String(rows.length)}행 읽음. 첫 행:`, rows[0] ?? "(데이터 없음)");
+  console.log(`[smoke] ${String(rows.length)}행 읽음.`);
+
+  const first = rows[0];
+  if (!first) {
+    console.log("[smoke] 데이터 없음.");
+    return;
+  }
+
+  // 기본값은 비민감 메타데이터만 출력한다 — 실제 고객 이름/이메일/금액 등이 터미널 기록이나
+  // 세션 로그에 남지 않도록 (docs/ADVERSARIAL_REVIEW_002.md AR-009).
+  console.log(
+    `[smoke] 첫 행 rowIndex=${String(first.rowIndex)}, 컬럼: ${Object.keys(first.values).join(", ")}`,
+  );
+
+  if (process.env.SMOKE_SHOW_VALUES === "1") {
+    console.log(
+      "[smoke] SMOKE_SHOW_VALUES=1로 명시적 요청됨 — 첫 행 실제 값(민감정보 포함 가능):",
+      first.values,
+    );
+  } else {
+    console.log(
+      "[smoke] 실제 값은 출력하지 않습니다. 필요하면 SMOKE_SHOW_VALUES=1로 다시 실행하세요 " +
+        "(터미널/세션 로그에 실제 고객 데이터가 남을 수 있으니 신중히 사용하세요).",
+    );
+  }
 }
 
 main().catch((err: unknown) => {

@@ -26,5 +26,13 @@ export default tseslint.config(
       "@typescript-eslint/consistent-type-imports": "error",
     },
   },
+  {
+    // 테스트에서 `expect(obj.method).toHaveBeenCalledWith(...)`, `vi.mocked(obj.method)`처럼
+    // mock 메서드를 값으로 참조하는 건 vitest/jest의 표준 패턴이고 this 바인딩 위험이 없다.
+    files: ["tests/**/*.ts"],
+    rules: {
+      "@typescript-eslint/unbound-method": "off",
+    },
+  },
   eslintConfigPrettier,
 );

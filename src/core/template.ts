@@ -3,8 +3,12 @@
 
 import type { RenderResult } from "./types.js";
 
-// {{key}} 형태만 인식한다. 중괄호 안 공백은 허용(`{{ name }}`), 키는 시트 헤더명과 같은 문자만.
-const PLACEHOLDER_PATTERN = /\{\{\s*([A-Za-z0-9_]+)\s*\}\}/g;
+// {{key}} 형태만 인식한다. 키는 중괄호 두 개가 아닌 문자는 전부 허용 — DESIGN §2 "헤더명이 곧
+// 템플릿 변수명"이라는 계약에 맞춰, 실제 구글시트 헤더에 흔한 한글/타갈로그/공백/하이픈까지
+// 키로 인식해야 한다(ASCII 영숫자+밑줄로 좁히면 그 키들이 결측으로도 탐지되지 않고 그대로
+// 미치환 텍스트가 발송될 수 있다 — docs/ADVERSARIAL_REVIEW_002.md AR-006).
+// 앞뒤 공백만 트림한다(`{{ name }}` 허용).
+const PLACEHOLDER_PATTERN = /\{\{([^{}]+)\}\}/g;
 
 /**
  * {{key}} 플레이스홀더를 values로 치환한다.
@@ -21,7 +25,8 @@ export function renderTemplate(template: string, values: Record<string, string>)
   const missing: string[] = [];
   const seenMissing = new Set<string>();
 
-  const text = template.replace(PLACEHOLDER_PATTERN, (placeholder: string, key: string) => {
+  const text = template.replace(PLACEHOLDER_PATTERN, (placeholder: string, rawKey: string) => {
+    const key = rawKey.trim();
     const value = values[key];
     if (value === undefined) {
       if (!seenMissing.has(key)) {

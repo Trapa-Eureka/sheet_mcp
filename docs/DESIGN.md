@@ -172,6 +172,7 @@ RESEND_API_KEY=
 MAIL_FROM=notify@example.com
 SEND_LOG_PATH=./data/sendlog.db
 SMOKE_SHEET_ID=                # npm run smoke 대상 구글시트 ID (사람 전용 수동 스모크, T3+)
+SMOKE_SHOW_VALUES=             # 1이면 smoke가 첫 행 실제 값을 출력 (기본은 컬럼명만, 민감정보 로그 방지)
 ```
 
 ## 8. Claude Code 연결

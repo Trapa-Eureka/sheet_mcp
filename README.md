@@ -34,6 +34,8 @@ Claude Code 연결은 `docs/DESIGN.md`의 "Claude Code 연결" 절 참조 (T8 �
 
 ## 상태
 
-- 2026-09-01: T0~T2 완료 (스캐폴딩, 도메인 타입/config 파서, InMemorySheetClient+픽스처).
-  T3부터는 아직 TODO — 시트 연동·발송·MCP 도구가 없어 실행 가능한 제품은 아니다.
-  진행 상황은 `docs/TASKS.md` 참조.
+진행 상태는 여기 수동으로 적지 않는다 — `docs/TASKS.md`의 각 태스크 상태(`DONE(날짜)`/`TODO`)가
+유일한 진실의 원천이다. README에 별도로 적으면 다음 태스크 완료 시 갱신을 잊고 뒤처지기 쉽다
+(`docs/ADVERSARIAL_REVIEW_002.md` AR-010).
+
+MCP 도구까지 전부 동작하는 실행 가능한 제품인지는 T8~T10이 `DONE`인지로 판단한다.
