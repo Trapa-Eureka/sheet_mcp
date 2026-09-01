@@ -14,13 +14,15 @@
 ## 명령어
 
 ```bash
-npm run check       # typecheck + lint + test 일괄 — 태스크 완료의 필수 게이트
-npm run test        # vitest run
-npm run test:watch  # vitest watch
-npm run typecheck   # tsc --noEmit
-npm run lint        # eslint .
-npm run dev         # MCP 서버 stdio 실행
-npm run smoke       # 실제 시트/이메일 수동 스모크 (사람 전용, docs/TESTING.md 참조)
+npm run check        # typecheck + lint + format:check + test 일괄 — 태스크 완료의 필수 게이트
+npm run test         # vitest run
+npm run test:watch   # vitest watch
+npm run typecheck    # tsc --noEmit
+npm run lint         # eslint .
+npm run format       # prettier --write . (docs/ADVERSARIAL_REVIEW_*.md는 감사 기록이라 .prettierignore로 제외)
+npm run format:check # prettier --check .
+npm run dev          # MCP 서버 stdio 실행
+npm run smoke        # 실제 시트/이메일 수동 스모크 (사람 전용, docs/TESTING.md 참조)
 ```
 
 ## 소스 레이아웃

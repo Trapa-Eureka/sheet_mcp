@@ -31,16 +31,16 @@ SheetClient TemplateEngine NotificationProvider SendLog
 
 ### notify_config 탭 (A열=키, B열=값)
 
-| 키 | 필수 | 예시 | 설명 |
-|---|---|---|---|
-| `data_tab` | ✓ | `customers` | 데이터 탭 이름 |
-| `id_column` | ✓ | `customer_id` | 행 식별 컬럼 (멱등성 키) |
-| `recipient_column` | ✓ | `email` | 수신자 주소 컬럼 |
-| `channel` | ✓ | `email` | v0.1은 `email`만 허용, `sms`는 명시적 미지원 에러 |
-| `subject_template` | ✓(email) | `[{{shop}}] 결제 안내` | 제목 템플릿 |
-| `body_template` | ✓ | `{{name}}님, {{amount}} 결제 기한은 {{due}}입니다.` | 본문 템플릿 |
-| `filter_column` | – | `status` | 발송 대상 필터 컬럼 |
-| `filter_value` | – | `unpaid` | 해당 값과 일치하는 행만 발송 |
+| 키                 | 필수     | 예시                                                | 설명                                              |
+| ------------------ | -------- | --------------------------------------------------- | ------------------------------------------------- |
+| `data_tab`         | ✓        | `customers`                                         | 데이터 탭 이름                                    |
+| `id_column`        | ✓        | `customer_id`                                       | 행 식별 컬럼 (멱등성 키)                          |
+| `recipient_column` | ✓        | `email`                                             | 수신자 주소 컬럼                                  |
+| `channel`          | ✓        | `email`                                             | v0.1은 `email`만 허용, `sms`는 명시적 미지원 에러 |
+| `subject_template` | ✓(email) | `[{{shop}}] 결제 안내`                              | 제목 템플릿                                       |
+| `body_template`    | ✓        | `{{name}}님, {{amount}} 결제 기한은 {{due}}입니다.` | 본문 템플릿                                       |
+| `filter_column`    | –        | `status`                                            | 발송 대상 필터 컬럼                               |
+| `filter_value`     | –        | `unpaid`                                            | 해당 값과 일치하는 행만 발송                      |
 
 ### 데이터 탭
 
@@ -53,7 +53,10 @@ SheetClient TemplateEngine NotificationProvider SendLog
 
 ```ts
 // core/types.ts
-export interface SheetRow { rowIndex: number; values: Record<string, string> }
+export interface SheetRow {
+  rowIndex: number;
+  values: Record<string, string>;
+}
 
 export type SendStatus = "sent" | "failed" | "skipped_duplicate";
 
@@ -61,7 +64,11 @@ export type SendStatus = "sent" | "failed" | "skipped_duplicate";
 // sentAt/messageId/error가 결측(undefined)이면 "빈 값으로 지운다"가 아니라 "그 컬럼은 건드리지 않는다"는 뜻이다.
 // (예: sent 후 같은 행이 다시 skipped_duplicate로 기록돼도 원래 _sent_at/_message_id는 감사 기록으로 남아야 한다.)
 export interface StatusUpdate {
-  rowIndex: number; sendStatus: SendStatus; sentAt?: string; messageId?: string; error?: string;
+  rowIndex: number;
+  sendStatus: SendStatus;
+  sentAt?: string;
+  messageId?: string;
+  error?: string;
 }
 
 export interface SheetClient {
@@ -72,10 +79,19 @@ export interface SheetClient {
 }
 
 export interface OutboundMessage {
-  rowKey: string; to: string; subject?: string; body: string; channel: "email" | "sms";
+  rowKey: string;
+  to: string;
+  subject?: string;
+  body: string;
+  channel: "email" | "sms";
 }
 
-export interface SendResult { rowKey: string; ok: boolean; messageId?: string; error?: string }
+export interface SendResult {
+  rowKey: string;
+  ok: boolean;
+  messageId?: string;
+  error?: string;
+}
 
 export interface NotificationProvider {
   readonly channel: "email" | "sms";
@@ -84,8 +100,14 @@ export interface NotificationProvider {
 
 // SqliteSendLog의 unique 키(§6: sheet_id, tab, row_key, template_hash)와 1:1 대응
 export interface SendLogEntry {
-  sheetId: string; tab: string; rowKey: string; templateHash: string;
-  sendStatus: SendStatus; sentAt: string; messageId?: string; error?: string;
+  sheetId: string;
+  tab: string;
+  rowKey: string;
+  templateHash: string;
+  sendStatus: SendStatus;
+  sentAt: string;
+  messageId?: string;
+  error?: string;
 }
 
 export interface SendLog {
@@ -94,7 +116,9 @@ export interface SendLog {
   list(sheetId: string): SendLogEntry[];
 }
 
-export interface Clock { now(): Date }  // 테스트 결정론용
+export interface Clock {
+  now(): Date;
+} // 테스트 결정론용
 ```
 
 ```ts
@@ -122,12 +146,12 @@ renderTemplate(template: string, values: Record<string, string>): RenderResult
 
 `@modelcontextprotocol/sdk`, stdio transport. 입력 스키마는 zod.
 
-| 도구 | 입력 | 동작 |
-|---|---|---|
-| `read_rows` | `sheetId` | config 적용된 대상 행 반환 (필터 반영, 최대 200행 미리보기) |
-| `preview_messages` | `sheetId` | dryRun 파이프라인 실행 — 렌더된 메시지 목록과 결측/중복 경고 반환. **발송 없음** |
+| 도구                 | 입력                          | 동작                                                                                      |
+| -------------------- | ----------------------------- | ----------------------------------------------------------------------------------------- |
+| `read_rows`          | `sheetId`                     | config 적용된 대상 행 반환 (필터 반영, 최대 200행 미리보기)                               |
+| `preview_messages`   | `sheetId`                     | dryRun 파이프라인 실행 — 렌더된 메시지 목록과 결측/중복 경고 반환. **발송 없음**          |
 | `send_notifications` | `sheetId`, `confirm: boolean` | `confirm=true` **그리고** `SEND_MODE=live`일 때만 실발송. 아니면 dry-run 결과 + 안내 반환 |
-| `get_send_log` | `sheetId` | SQLite 발송 이력 반환 |
+| `get_send_log`       | `sheetId`                     | SQLite 발송 이력 반환                                                                     |
 
 안전장치가 이중인 이유: 에이전트가 자율 실행 중 실수로 실발송하는 사고를 막기 위해, 도구 파라미터(대화 레벨)와 환경변수(프로세스 레벨) 둘 다 요구한다.
 

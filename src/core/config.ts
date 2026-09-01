@@ -87,6 +87,11 @@ function required(value: string | undefined, key: string): string {
   return value;
 }
 
+/** filter_column/filter_value처럼 선택 키는 공백뿐이어도 "결측"으로 정규화한다 (원본 공백 문자열을 그대로 흘리지 않음) */
+function optional(value: string | undefined): string | undefined {
+  return isBlank(value) ? undefined : value;
+}
+
 export function parseNotifyConfig(raw: Record<string, string>): NotifyConfig {
   const result = rawConfigSchema.safeParse(raw);
   if (!result.success) {
@@ -102,7 +107,7 @@ export function parseNotifyConfig(raw: Record<string, string>): NotifyConfig {
     channel: "email",
     subjectTemplate: required(parsed.subject_template, "subject_template"),
     bodyTemplate: required(parsed.body_template, "body_template"),
-    filterColumn: parsed.filter_column,
-    filterValue: parsed.filter_value,
+    filterColumn: optional(parsed.filter_column),
+    filterValue: optional(parsed.filter_value),
   };
 }

@@ -8,30 +8,32 @@
 
 ## 문서 맵
 
-| 문서 | 내용 | 읽는 시점 |
-|---|---|---|
-| `CLAUDE.md` | 에이전트 스티어링 파일 — 스택, 명령어, 규칙, 가드레일 | 모든 에이전트 세션 시작 시 (자동 로드) |
-| `docs/SPEC.md` | 제품 스펙 — 배경, 목표/비목표, 시나리오, 로드맵 | 기능 논의·범위 판단 전 |
-| `docs/DESIGN.md` | 기술 설계 — 아키텍처, 인터페이스, 시트 규약, MCP 도구 | 구현 전 필독 |
-| `docs/TESTING.md` | 테스트 전략 — 목(mock) 구성, 엣지 케이스, 게이트 | 테스트 작성 전 |
-| `docs/TASKS.md` | 태스크 백로그 — 에이전트 실행 단위, 완료 기준 | 작업 배정 시 |
-| `docs/WORKFLOW.md` | AI-native 개발 방식 — 이 레포를 굴리는 규칙 | 최초 1회 + 운영 중 참조 |
+| 문서               | 내용                                                  | 읽는 시점                              |
+| ------------------ | ----------------------------------------------------- | -------------------------------------- |
+| `CLAUDE.md`        | 에이전트 스티어링 파일 — 스택, 명령어, 규칙, 가드레일 | 모든 에이전트 세션 시작 시 (자동 로드) |
+| `docs/SPEC.md`     | 제품 스펙 — 배경, 목표/비목표, 시나리오, 로드맵       | 기능 논의·범위 판단 전                 |
+| `docs/DESIGN.md`   | 기술 설계 — 아키텍처, 인터페이스, 시트 규약, MCP 도구 | 구현 전 필독                           |
+| `docs/TESTING.md`  | 테스트 전략 — 목(mock) 구성, 엣지 케이스, 게이트      | 테스트 작성 전                         |
+| `docs/TASKS.md`    | 태스크 백로그 — 에이전트 실행 단위, 완료 기준         | 작업 배정 시                           |
+| `docs/WORKFLOW.md` | AI-native 개발 방식 — 이 레포를 굴리는 규칙           | 최초 1회 + 운영 중 참조                |
 
 ## 개발 방식
 
 이 프로젝트는 **문서 → 에이전트 구현 → 검증** 순서로 진행한다 (`docs/WORKFLOW.md` 참조).
 사람(Jin)은 스펙·설계·리뷰·실발송 승인을 맡고, 코드 작성은 Claude Code 에이전트가 `docs/TASKS.md`의 태스크 단위로 수행한다. 모든 태스크의 공통 완료 조건은 `npm run check` 통과다.
 
-## 퀵스타트 (T0 완료 후 유효)
+## 퀵스타트
 
 ```bash
 npm install
-npm run check        # typecheck + lint + test — 에이전트/사람 공통 게이트
-npm run dev          # MCP 서버 stdio 실행 (개발용)
+npm run check        # typecheck + lint + format:check + test — 에이전트/사람 공통 게이트
+npm run dev          # MCP 서버 stdio 실행 — T8 전까지는 미구현 안내만 출력하는 플레이스홀더
 ```
 
-Claude Code 연결은 `docs/DESIGN.md`의 "Claude Code 연결" 절 참조.
+Claude Code 연결은 `docs/DESIGN.md`의 "Claude Code 연결" 절 참조 (T8 이후 유효).
 
 ## 상태
 
-- 2026-09-01: 문서 단계 (코드 미작성). T0부터 시작.
+- 2026-09-01: T0~T2 완료 (스캐폴딩, 도메인 타입/config 파서, InMemorySheetClient+픽스처).
+  T3부터는 아직 TODO — 시트 연동·발송·MCP 도구가 없어 실행 가능한 제품은 아니다.
+  진행 상황은 `docs/TASKS.md` 참조.

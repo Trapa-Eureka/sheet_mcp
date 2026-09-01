@@ -15,9 +15,7 @@ function validRaw(overrides: Record<string, string> = {}): Record<string, string
 
 describe("parseNotifyConfig", () => {
   it("정상 config를 파싱한다 (필터 포함)", () => {
-    const config = parseNotifyConfig(
-      validRaw({ filter_column: "status", filter_value: "unpaid" }),
-    );
+    const config = parseNotifyConfig(validRaw({ filter_column: "status", filter_value: "unpaid" }));
     expect(config).toEqual({
       dataTab: "collections",
       idColumn: "customer_id",
@@ -32,6 +30,12 @@ describe("parseNotifyConfig", () => {
 
   it("filter_column/filter_value가 둘 다 없으면 정상 파싱된다 (선택 항목)", () => {
     const config = parseNotifyConfig(validRaw());
+    expect(config.filterColumn).toBeUndefined();
+    expect(config.filterValue).toBeUndefined();
+  });
+
+  it("filter_column/filter_value가 둘 다 공백뿐이면 원본 공백을 흘리지 않고 undefined로 정규화한다", () => {
+    const config = parseNotifyConfig(validRaw({ filter_column: "   ", filter_value: "   " }));
     expect(config.filterColumn).toBeUndefined();
     expect(config.filterValue).toBeUndefined();
   });
