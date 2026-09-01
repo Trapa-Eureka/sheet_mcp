@@ -33,7 +33,7 @@
 - 목표: googleapis 서비스 계정 구현. 테스트는 **작성하지 않는다**(네트워크 금지) — 스모크로 검증.
 - 완료 기준: [ ] SheetClient 계약 충족(typecheck) [ ] `scripts/smoke.ts`에서 읽기 경로 사용 가능 [ ] 시크릿 하드코딩 없음 [ ] check 통과
 
-### T4 (레인 B) — 템플릿 엔진 · 상태: TODO · 의존: T1
+### T4 (레인 B) — 템플릿 엔진 · 상태: DONE(2026-09-01) · 의존: T1
 
 - 목표: `renderTemplate` 순수 함수 (DESIGN §3). 결측 키는 throw가 아니라 `missing[]` 반환.
 - 완료 기준: [ ] 치환/결측/이스케이프 불필요 확인/유니코드 케이스 포함 `tests/template.test.ts` 8케이스 이상 [ ] check 통과
