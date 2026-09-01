@@ -55,6 +55,13 @@ SheetClient TemplateEngine NotificationProvider SendLog
 // core/types.ts
 export interface SheetRow { rowIndex: number; values: Record<string, string> }
 
+export type SendStatus = "sent" | "failed" | "skipped_duplicate";
+
+// writeStatus가 시트에 반영하는 상태 컬럼 4개(§2)를 행 단위로 표현
+export interface StatusUpdate {
+  rowIndex: number; sendStatus: SendStatus; sentAt?: string; messageId?: string; error?: string;
+}
+
 export interface SheetClient {
   readConfig(sheetId: string): Promise<Record<string, string>>;
   readRows(sheetId: string, tab: string): Promise<SheetRow[]>;
@@ -73,6 +80,12 @@ export interface NotificationProvider {
   send(msg: OutboundMessage): Promise<SendResult>;
 }
 
+// SqliteSendLog의 unique 키(§6: sheet_id, tab, row_key, template_hash)와 1:1 대응
+export interface SendLogEntry {
+  sheetId: string; tab: string; rowKey: string; templateHash: string;
+  sendStatus: SendStatus; sentAt: string; messageId?: string; error?: string;
+}
+
 export interface SendLog {
   wasSent(sheetId: string, tab: string, rowKey: string, templateHash: string): boolean;
   record(entry: SendLogEntry): void;
@@ -84,6 +97,7 @@ export interface Clock { now(): Date }  // 테스트 결정론용
 
 ```ts
 // core/template.ts — 순수 함수
+export interface RenderResult { text: string; missing: string[] }
 renderTemplate(template: string, values: Record<string, string>): RenderResult
 // {{key}} 치환. 값 결측 시 RenderResult.missing에 키를 담아 반환 (throw 아님 — 행 단위 실패 처리)
 ```

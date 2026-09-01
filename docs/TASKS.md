@@ -17,7 +17,7 @@
 - 산출: `package.json`(스크립트: check/test/test:watch/typecheck/lint/dev/smoke), `tsconfig.json`(strict, noUncheckedIndexedAccess), `.eslintrc` 계열, `vitest.config.ts`, `.env.example`, `.gitignore`(.env, data/)
 - 완료 기준: [ ] `npm run check` 통과 [ ] 더미 테스트 1개 실행됨 [ ] `git init` + 첫 커밋
 
-### T1 — 도메인 타입 + config 파서 · 상태: TODO · 의존: T0
+### T1 — 도메인 타입 + config 파서 · 상태: DONE(2026-09-01) · 의존: T0
 - 목표: DESIGN §3 인터페이스 전체를 `src/core/types.ts`로, `notify_config` zod 파서를 `src/core/config.ts`로.
 - 완료 기준: [ ] 필수 키 결측/`channel=sms` 시 **수정 방법이 담긴** 에러 메시지 (CLAUDE.md 컨벤션) [ ] `tests/config.test.ts` — 정상 1, 오류 4케이스 이상 [ ] check 통과
 
