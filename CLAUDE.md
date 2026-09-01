@@ -17,6 +17,7 @@
 npm run check        # typecheck + lint + format:check + test 일괄 — 태스크 완료의 필수 게이트
 npm run test         # vitest run
 npm run test:watch   # vitest watch
+npm run test:coverage # vitest run --coverage (core/ 라인 커버리지 리포트, docs/TESTING.md §6)
 npm run typecheck    # tsc --noEmit
 npm run lint         # eslint .
 npm run format       # prettier --write . (docs/ADVERSARIAL_REVIEW_*.md는 감사 기록이라 .prettierignore로 제외)
