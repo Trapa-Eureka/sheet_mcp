@@ -144,6 +144,29 @@ describe("GoogleSheetClient", () => {
       ]);
     });
 
+    it("null 필드는 빈 문자열로 명시적으로 지운다(undefined=건드리지 않음과 구분, AR-014)", async () => {
+      const sheetsApi = makeSheetsApiMock([HEADER]);
+      const client = new GoogleSheetClient({ sheetsApi });
+
+      await client.writeStatus("sheet-1", "customers", [
+        {
+          rowIndex: 2,
+          sendStatus: "sent",
+          sentAt: "2026-09-01T00:00:00.000Z",
+          messageId: null,
+          error: null,
+        },
+      ]);
+
+      const call = vi.mocked(sheetsApi.spreadsheets.values.batchUpdate).mock.calls[0]?.[0];
+      expect(call?.requestBody.data).toEqual([
+        { range: "'customers'!B2", values: [["sent"]] },
+        { range: "'customers'!C2", values: [["2026-09-01T00:00:00.000Z"]] },
+        { range: "'customers'!D2", values: [[""]] },
+        { range: "'customers'!E2", values: [[""]] },
+      ]);
+    });
+
     it("상태 컬럼이 헤더에 없으면 ensureStatusColumns를 먼저 호출하라는 에러를 던진다", async () => {
       const sheetsApi = makeSheetsApiMock([["name", "email"]]);
       const client = new GoogleSheetClient({ sheetsApi });

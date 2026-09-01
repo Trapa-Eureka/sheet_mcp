@@ -132,6 +132,25 @@ describe("InMemorySheetClient", () => {
     });
   });
 
+  it("writeStatus는 null 필드를 빈 문자열로 명시적으로 지운다(undefined=보존과 구분, AR-014)", async () => {
+    await client.ensureStatusColumns("sheet-1", "customers");
+    await client.writeStatus("sheet-1", "customers", [
+      {
+        rowIndex: 2,
+        sendStatus: "failed",
+        error: "invalid email",
+      },
+    ]);
+
+    // 재시도로 성공하면 과거 _error를 null로 지운다(undefined였다면 남아있었을 것).
+    await client.writeStatus("sheet-1", "customers", [
+      { rowIndex: 2, sendStatus: "sent", sentAt: "2026-09-01T00:00:00.000Z", error: null },
+    ]);
+
+    const rows = await client.readRows("sheet-1", "customers");
+    expect(rows[0]?.values).toMatchObject({ _send_status: "sent", _error: "" });
+  });
+
   it("writeStatus는 ensureStatusColumns 없이도 상태 컬럼을 새로 만들어 반영한다", async () => {
     await client.writeStatus("sheet-1", "customers", [
       { rowIndex: 2, sendStatus: "skipped_duplicate" },

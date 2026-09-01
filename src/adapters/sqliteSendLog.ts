@@ -1,19 +1,23 @@
 // SendLog의 실제 구현 — better-sqlite3 로컬 파일 DB.
 // 설계: docs/DESIGN.md §6(unique 키: sheet_id, tab, row_key, template_hash), 태스크: docs/TASKS.md T6.
+// claim/commit/release 재설계 배경: docs/ADVERSARIAL_REVIEW_003.md AR-011/AR-013 — SQLite의
+// UNIQUE 제약을 이용한 INSERT 자체를 원자적 "예약(claim)" 경계로 써서, 같은 파일을 바라보는
+// 서로 다른 프로세스(예: MCP 서버 두 인스턴스) 사이의 동시 실행에서도 중복 발송을 막는다.
 // 테스트는 임시 파일 DB로 검증한다(파일 IO는 허용, 네트워크 아님 — docs/TESTING.md §1).
 
 import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { z } from "zod";
-import type { SendLog, SendLogEntry } from "../core/types.js";
+import type { SendLog, SendLogEntry, SendLogListOptions } from "../core/types.js";
+import { DEFAULT_SEND_LOG_LIST_LIMIT, MAX_SEND_LOG_LIST_LIMIT } from "../core/types.js";
 
 const sendLogRowSchema = z.object({
   sheet_id: z.string(),
   tab: z.string(),
   row_key: z.string(),
   template_hash: z.string(),
-  send_status: z.enum(["sent", "failed", "skipped_duplicate"]),
+  send_status: z.enum(["sent", "failed", "skipped_duplicate", "sent_log_failed"]),
   sent_at: z.string(),
   message_id: z.string().nullable(),
   error: z.string().nullable(),
@@ -68,47 +72,75 @@ export class SqliteSendLog implements SendLog {
     return row !== undefined;
   }
 
-  record(entry: SendLogEntry): void {
+  // INSERT 자체가 원자적 claim 경계다: SQLite는 이 한 문장 안에서 UNIQUE 위반 여부를 판정하므로,
+  // "먼저 조회 → 나중에 삽입"처럼 그 사이에 다른 프로세스가 끼어들 틈이 없다.
+  claim(
+    sheetId: string,
+    tab: string,
+    rowKey: string,
+    templateHash: string,
+    claimedAt: string,
+  ): boolean {
     try {
       this.db
-        .prepare<[string, string, string, string, string, string, string | null, string | null]>(
-          `INSERT INTO send_log
-             (sheet_id, tab, row_key, template_hash, send_status, sent_at, message_id, error)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        .prepare<[string, string, string, string, string]>(
+          `INSERT INTO send_log (sheet_id, tab, row_key, template_hash, send_status, sent_at)
+           VALUES (?, ?, ?, ?, 'sent', ?)`,
         )
-        .run(
-          entry.sheetId,
-          entry.tab,
-          entry.rowKey,
-          entry.templateHash,
-          entry.sendStatus,
-          entry.sentAt,
-          entry.messageId ?? null,
-          entry.error ?? null,
-        );
+        .run(sheetId, tab, rowKey, templateHash, claimedAt);
+      return true;
     } catch (err) {
       if (err instanceof Database.SqliteError && err.code === "SQLITE_CONSTRAINT_UNIQUE") {
-        throw new Error(
-          `SendLog: (sheetId='${entry.sheetId}', tab='${entry.tab}', rowKey='${entry.rowKey}', ` +
-            `templateHash='${entry.templateHash}') 조합은 이미 기록되어 있습니다. 같은 템플릿으로 같은 ` +
-            "행을 두 번 기록하려는 시도입니다 — 파이프라인이 record() 전에 wasSent()를 먼저 확인했는지 점검하세요.",
-        );
+        return false;
       }
       throw err;
     }
   }
 
-  list(sheetId: string): SendLogEntry[] {
-    const rows: unknown[] = this.db
-      .prepare<[string]>(
-        `SELECT sheet_id, tab, row_key, template_hash, send_status, sent_at, message_id, error
-         FROM send_log WHERE sheet_id = ? ORDER BY id ASC`,
+  commit(
+    sheetId: string,
+    tab: string,
+    rowKey: string,
+    templateHash: string,
+    sentAt: string,
+    messageId: string | undefined,
+  ): void {
+    const result = this.db
+      .prepare<[string, string | null, string, string, string, string]>(
+        `UPDATE send_log SET sent_at = ?, message_id = ?
+         WHERE sheet_id = ? AND tab = ? AND row_key = ? AND template_hash = ?`,
       )
-      .all(sheetId);
+      .run(sentAt, messageId ?? null, sheetId, tab, rowKey, templateHash);
+    if (result.changes === 0) {
+      throw new Error(
+        `SendLog.commit: claim되지 않은 (sheetId='${sheetId}', tab='${tab}', rowKey='${rowKey}', ` +
+          `templateHash='${templateHash}')을 commit하려 했습니다. claim() 없이 commit()을 호출한 버그입니다.`,
+      );
+    }
+  }
+
+  release(sheetId: string, tab: string, rowKey: string, templateHash: string): void {
+    this.db
+      .prepare<[string, string, string, string]>(
+        `DELETE FROM send_log WHERE sheet_id = ? AND tab = ? AND row_key = ? AND template_hash = ?`,
+      )
+      .run(sheetId, tab, rowKey, templateHash);
+  }
+
+  // AR-015: 이력이 무한정 쌓여도 응답이 무제한으로 커지지 않도록 기본/최대 limit을 두고,
+  // 최근 것부터 반환한다(ORDER BY id DESC) — 오래된 항목만 영원히 보이는 것을 방지.
+  list(sheetId: string, options: SendLogListOptions = {}): SendLogEntry[] {
+    const limit = Math.min(options.limit ?? DEFAULT_SEND_LOG_LIST_LIMIT, MAX_SEND_LOG_LIST_LIMIT);
+    const rows: unknown[] = this.db
+      .prepare<[string, number]>(
+        `SELECT sheet_id, tab, row_key, template_hash, send_status, sent_at, message_id, error
+         FROM send_log WHERE sheet_id = ? ORDER BY id DESC LIMIT ?`,
+      )
+      .all(sheetId, limit);
     return rows.map((row) => rowToEntry(sendLogRowSchema.parse(row)));
   }
 
-  /** DB 파일 핸들을 닫는다. 테스트에서 임시 파일 정리 전에 호출한다. */
+  /** DB 파일 핸들을 닫는다. 테스트/프로세스 종료 시 호출한다 (docs/ADVERSARIAL_REVIEW_003.md AR-018). */
   close(): void {
     this.db.close();
   }

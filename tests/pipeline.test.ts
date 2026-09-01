@@ -16,6 +16,7 @@ import type { SheetFixture } from "../src/mocks/inMemorySheetClient.js";
 import { MockNotificationProvider } from "../src/mocks/mockNotificationProvider.js";
 import { InMemorySendLog } from "../src/mocks/inMemorySendLog.js";
 import { FixedClock } from "../src/mocks/fixedClock.js";
+import type { SendLog, SendLogEntry, SendLogListOptions } from "../src/core/types.js";
 
 const LARGE_FIXTURE_PATH = path.resolve(process.cwd(), "fixtures/sheets/large-1000.json");
 const SHEET_ID = "sheet-1";
@@ -36,7 +37,7 @@ interface SetupOptions {
   notifyConfig?: Record<string, string>;
   rows?: Array<Record<string, string>>;
   failFor?: string[];
-  sendLog?: InMemorySendLog;
+  sendLog?: SendLog;
   clock?: FixedClock;
 }
 
@@ -44,7 +45,7 @@ interface Setup {
   pipeline: SendPipeline;
   sheetClient: InMemorySheetClient;
   provider: MockNotificationProvider;
-  sendLog: InMemorySendLog;
+  sendLog: SendLog;
   deps: SendPipelineDeps;
 }
 
@@ -406,5 +407,154 @@ describe("applyFilter", () => {
       { rowIndex: 3, values: { status: "paid" } },
     ];
     expect(applyFilter(rows, "status", "unpaid")).toEqual([rows[0]]);
+  });
+});
+
+// SendLog의 commit()만 실패하도록 흉내내는 목 — AR-013(발송 성공 + 로컬 기록 실패) 재현용.
+// claim/release/wasSent/list는 내부 InMemorySendLog에 그대로 위임한다.
+class CommitFailingSendLog implements SendLog {
+  private readonly inner = new InMemorySendLog();
+
+  claim(
+    sheetId: string,
+    tab: string,
+    rowKey: string,
+    templateHash: string,
+    claimedAt: string,
+  ): boolean {
+    return this.inner.claim(sheetId, tab, rowKey, templateHash, claimedAt);
+  }
+
+  commit(): void {
+    throw new Error("DB 쓰기 실패(테스트 주입)");
+  }
+
+  release(sheetId: string, tab: string, rowKey: string, templateHash: string): void {
+    this.inner.release(sheetId, tab, rowKey, templateHash);
+  }
+
+  wasSent(sheetId: string, tab: string, rowKey: string, templateHash: string): boolean {
+    return this.inner.wasSent(sheetId, tab, rowKey, templateHash);
+  }
+
+  list(sheetId: string, options?: SendLogListOptions): SendLogEntry[] {
+    return this.inner.list(sheetId, options);
+  }
+}
+
+describe("docs/ADVERSARIAL_REVIEW_003.md 회귀 테스트", () => {
+  it("AR-011: 같은 배치 안에 동일 rowKey가 2번 있어도 provider는 1번만 호출되고 SendLog엔 1건만 남는다", async () => {
+    const rows = [
+      { customer_id: "C-1", name: "Alice", email: "alice@example.com", shop: "Shop1" },
+      { customer_id: "C-1", name: "Alice(중복 행)", email: "alice@example.com", shop: "Shop1" },
+    ];
+    const sendLog = new InMemorySendLog();
+    const { pipeline, provider } = setup({ rows, sendLog });
+    const result = await pipeline.run(SHEET_ID, { dryRun: false });
+
+    expect(result.sent).toBe(1);
+    expect(result.skipped).toBe(1);
+    expect(provider.sent).toHaveLength(1);
+    expect(sendLog.list(SHEET_ID)).toHaveLength(1);
+  });
+
+  it(
+    "AR-013: 발송 성공 후 SendLog 기록이 실패하면 failed가 아니라 sent_log_failed로 분리되고, " +
+      "claim은 release되지 않아 같은 실행 재시도가 다시 발송을 시도하지 못한다",
+    async () => {
+      const rows = [
+        { customer_id: "C-1", name: "Alice", email: "alice@example.com", shop: "Shop1" },
+      ];
+      const sendLog = new CommitFailingSendLog();
+      const { pipeline, provider } = setup({ rows, sendLog });
+
+      const result = await pipeline.run(SHEET_ID, { dryRun: false });
+
+      expect(provider.sent).toHaveLength(1); // 실제 발송 자체는 성공했다
+      expect(result.details[0]?.status).toBe("sent_log_failed");
+      expect(result.details[0]?.error).toContain("로컬 발송 기록 저장에 실패");
+      // failed/sent 어느 쪽 카운트에도 들어가면 안 된다 — 별도 상태이므로 집계에서 제외된다.
+      expect(result.sent).toBe(0);
+      expect(result.failed).toBe(0);
+
+      // claim이 release되지 않았으므로 wasSent는 여전히 true — 재시도해도 다시 발송되지 않는다.
+      expect(
+        sendLog.wasSent(
+          SHEET_ID,
+          "customers",
+          "C-1",
+          computeTemplateHash("[{{shop}}] 안내", "{{name}}님, 안녕하세요."),
+        ),
+      ).toBe(true);
+    },
+  );
+
+  it("AR-014: 실패했던 행이 재시도로 성공하면 과거 _error가 지워진다", async () => {
+    const rows = [{ customer_id: "C-1", name: "Alice", email: "alice@example.com", shop: "Shop1" }];
+    const sendLog = new InMemorySendLog();
+    const { pipeline: first, sheetClient } = setup({ rows, sendLog, failFor: ["C-1"] });
+    await first.run(SHEET_ID, { dryRun: false });
+
+    const afterFail = await sheetClient.readRows(SHEET_ID, "customers");
+    expect(afterFail[0]?.values._send_status).toBe("failed");
+    expect(afterFail[0]?.values._error).toBeTruthy();
+
+    // 같은 sheetClient/sendLog 위에서, 이번엔 실패 주입 없는 provider로 재실행(같은 템플릿 재시도).
+    const second = new SendPipeline({
+      sheetClient,
+      provider: new MockNotificationProvider(),
+      sendLog,
+      clock: new FixedClock(),
+    });
+    await second.run(SHEET_ID, { dryRun: false });
+
+    const afterRetry = await sheetClient.readRows(SHEET_ID, "customers");
+    expect(afterRetry[0]?.values._send_status).toBe("sent");
+    expect(afterRetry[0]?.values._error).toBe("");
+  });
+
+  it("AR-014: 성공했던 행이 이후(새 템플릿) 실패해도 과거 _sent_at/_message_id는 보존된다", async () => {
+    const rows = [{ customer_id: "C-1", name: "Alice", email: "alice@example.com", shop: "Shop1" }];
+    const sendLog = new InMemorySendLog();
+    const { pipeline: first, sheetClient } = setup({ rows, sendLog });
+    await first.run(SHEET_ID, { dryRun: false });
+
+    const afterSent = await sheetClient.readRows(SHEET_ID, "customers");
+    const originalSentAt = afterSent[0]?.values._sent_at;
+    const originalMessageId = afterSent[0]?.values._message_id;
+    expect(originalSentAt).toBeTruthy();
+    expect(originalMessageId).toBe("mock-C-1");
+
+    // 템플릿을 바꿔 재실행하고(재발송 대상이 됨), 이번엔 실패를 주입한다. loadSheet은 탭을 통째로
+    // 덮어쓰므로, 원본 rows가 아니라 afterSent(1차 실행 후 상태 컬럼까지 반영된 현재 값)로 다시
+    // 로드해야 방금 기록된 _sent_at/_message_id가 유지된다.
+    sheetClient.loadSheet(SHEET_ID, {
+      notifyConfig: baseNotifyConfig({ body_template: "{{name}}님, (수정됨) 실패할 예정." }),
+      tabs: { customers: afterSent.map((row) => row.values) },
+    });
+    const second = new SendPipeline({
+      sheetClient,
+      provider: new MockNotificationProvider({ failFor: ["C-1"] }),
+      sendLog,
+      clock: new FixedClock("2026-09-02T00:00:00.000Z"),
+    });
+    await second.run(SHEET_ID, { dryRun: false });
+
+    const afterFailedRetry = await sheetClient.readRows(SHEET_ID, "customers");
+    expect(afterFailedRetry[0]?.values._send_status).toBe("failed");
+    expect(afterFailedRetry[0]?.values._sent_at).toBe(originalSentAt);
+    expect(afterFailedRetry[0]?.values._message_id).toBe(originalMessageId);
+  });
+
+  it("AR-017: 명백히 불량한 이메일 형식은 '@' 포함 여부만으로는 통과하던 것도 이제 failed 처리된다", async () => {
+    const badEmails = ["a@", "@example.com", "a@@example.com", "a b@example.com"];
+    for (const email of badEmails) {
+      const { pipeline, provider } = setup({
+        rows: [{ customer_id: "C-1", name: "Alice", email, shop: "Shop1" }],
+      });
+      const result = await pipeline.run(SHEET_ID, { dryRun: false });
+      expect(result.failed, `email='${email}'는 failed여야 함`).toBe(1);
+      expect(provider.sent, `email='${email}'는 provider가 호출되면 안 됨`).toHaveLength(0);
+    }
   });
 });

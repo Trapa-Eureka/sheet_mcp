@@ -16,6 +16,17 @@ export interface SheetFixtureFile extends SheetFixture {
   sheetId: string;
 }
 
+/** StatusUpdate 필드의 3단계 값(DESIGN §3, AR-014) 공통 적용 로직 — GoogleSheetClient도 같은 계약을 지킨다.
+ * undefined=건드리지 않음, null=지움(빈 문자열), string=그 값으로 설정. */
+function applyOptionalCell(
+  values: Record<string, string>,
+  column: string,
+  value: string | null | undefined,
+): void {
+  if (value === undefined) return;
+  values[column] = value === null ? "" : value;
+}
+
 /** fixtures/sheets/*.json이 지켜야 할 형태. 생성 스크립트(scripts/genLargeFixture.ts)도 이 스키마로 결과물을 검증한다 */
 export const sheetFixtureFileSchema = z.object({
   sheetId: z.string(),
@@ -151,15 +162,15 @@ export class InMemorySheetClient implements SheetClient {
       }
 
       // 2단계: 검증 통과 후에만 실제로 반영한다.
-      // sentAt/messageId/error가 결측이면 "지운다"가 아니라 "건드리지 않는다" (DESIGN §3 StatusUpdate 참고) —
-      // 예를 들어 sent 후 같은 행이 skipped_duplicate로 다시 기록돼도 원래 _sent_at/_message_id는 남는다.
+      // sentAt/messageId/error는 3단계 값이다(DESIGN §3 StatusUpdate, AR-014):
+      // undefined=건드리지 않음, string=그 값으로 설정, null=명시적으로 지움(빈 문자열).
       // 같은 배치 안에서 rowIndex가 중복되면 배열 순서상 마지막 update가 최종 값이 된다(last-write-wins).
       updates.forEach((update, i) => {
         const row = targets[i]!;
         row.values._send_status = update.sendStatus;
-        if (update.sentAt !== undefined) row.values._sent_at = update.sentAt;
-        if (update.messageId !== undefined) row.values._message_id = update.messageId;
-        if (update.error !== undefined) row.values._error = update.error;
+        applyOptionalCell(row.values, "_sent_at", update.sentAt);
+        applyOptionalCell(row.values, "_message_id", update.messageId);
+        applyOptionalCell(row.values, "_error", update.error);
       });
       return Promise.resolve();
     } catch (err) {

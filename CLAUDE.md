@@ -10,6 +10,7 @@
 - 이메일: Resend API (참조 어댑터) / SMTP(Nodemailer)는 대체 어댑터
 - 발송 로그: `better-sqlite3` (로컬 파일 DB)
 - 검증: Vitest + ESLint + Prettier, 스키마는 `zod`
+- `.env` 로딩: `dotenv` — `main()` 진입점(서버/스모크)에서만 호출, 테스트 경로에는 영향 없음
 
 ## 명령어
 

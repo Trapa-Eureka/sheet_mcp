@@ -2,6 +2,7 @@
 // zod 입력/출력 검증 -> core 함수 호출 -> 결과 직렬화만 조립한다 (DESIGN §5, 태스크: docs/TASKS.md T8).
 
 import { fileURLToPath } from "node:url";
+import { config as loadDotenv } from "dotenv";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -16,10 +17,12 @@ import {
   type SendPipelineDeps,
 } from "./core/pipeline.js";
 import { readTargetRows } from "./core/readRows.js";
+import { DEFAULT_SEND_LOG_LIST_LIMIT } from "./core/types.js";
 import {
   getSendLogOutputSchema,
   previewMessagesOutputSchema,
   readRowsOutputSchema,
+  sendLogLimitSchema,
   sendNotificationsOutputSchema,
   sheetIdSchema,
 } from "./toolSchemas.js";
@@ -110,15 +113,21 @@ export function createServer(deps: SendPipelineDeps): McpServer {
     "get_send_log",
     {
       title: "발송 이력 조회",
-      description: "이 sheetId에 대한 SQLite 발송 이력을 반환한다.",
-      inputSchema: { sheetId: sheetIdSchema },
+      description:
+        "이 sheetId에 대한 발송 이력을 최신순으로 반환한다 (기본 " +
+        `${String(DEFAULT_SEND_LOG_LIST_LIMIT)}건, limit으로 조정 가능).`,
+      inputSchema: { sheetId: sheetIdSchema, limit: sendLogLimitSchema },
       outputSchema: getSendLogOutputSchema,
     },
-    ({ sheetId }) => {
-      const entries = deps.sendLog.list(sheetId);
+    ({ sheetId, limit }) => {
+      const effectiveLimit = limit ?? DEFAULT_SEND_LOG_LIST_LIMIT;
+      const entries = deps.sendLog.list(sheetId, { limit: effectiveLimit });
+      // entries.length가 effectiveLimit에 도달했다면 더 있을 수 있다는 뜻이다(정확한 total count는
+      // 조회하지 않는 근사치 — AR-015. 정밀한 hasMore가 필요하면 limit+1개를 조회해 비교해야 한다).
+      const payload = { entries, truncated: entries.length >= effectiveLimit };
       return {
-        content: [{ type: "text", text: JSON.stringify(entries, null, 2) }],
-        structuredContent: { entries },
+        content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
+        structuredContent: payload,
       };
     },
   );
@@ -130,18 +139,37 @@ export function createServer(deps: SendPipelineDeps): McpServer {
  * 실제 어댑터로 SendPipelineDeps를 조립한다. 필수 환경변수(GOOGLE_SERVICE_ACCOUNT_JSON,
  * RESEND_API_KEY, MAIL_FROM)가 없으면 각 어댑터 생성자가 무엇이 왜 틀렸고 어떻게 고치는지 담은
  * 에러를 즉시 던진다 — 설정이 잘못된 채로 서버가 조용히 뜨는 대신 fail fast한다.
+ * sendLog는 별도로 반환해 main()에서 프로세스 종료 시 명시적으로 close()할 수 있게 한다
+ * (docs/ADVERSARIAL_REVIEW_003.md AR-018).
  */
-function buildProductionDeps(): SendPipelineDeps {
-  return {
+function buildProductionDeps(): { deps: SendPipelineDeps; sendLog: SqliteSendLog } {
+  const sendLog = new SqliteSendLog();
+  const deps: SendPipelineDeps = {
     sheetClient: new GoogleSheetClient(),
     provider: new ResendEmailProvider(),
-    sendLog: new SqliteSendLog(),
+    sendLog,
     clock: new SystemClock(),
   };
+  return { deps, sendLog };
 }
 
 async function main(): Promise<void> {
-  const server = createServer(buildProductionDeps());
+  // .env가 있으면 로드한다(이미 설정된 실제 프로세스 환경변수는 덮어쓰지 않음 — dotenv 기본 동작).
+  // createServer()를 단독 import(테스트 등)할 때는 절대 실행되지 않으므로 테스트 결정론에 영향이
+  // 없다 — docs/ADVERSARIAL_REVIEW_003.md AR-012.
+  // quiet: true는 필수다 — dotenv는 기본적으로 "injected env" 배너를 stdout에 찍는데, MCP stdio
+  // transport는 stdout을 JSON-RPC 프레이밍 전용으로 쓴다. 배너가 섞이면 첫 메시지부터 클라이언트의
+  // JSON 파싱이 깨진다.
+  loadDotenv({ quiet: true });
+
+  const { deps, sendLog } = buildProductionDeps();
+  const server = createServer(deps);
+  // 프로세스가 어떤 경로로 끝나든(부모가 stdin을 닫아 자연 종료되는 경우 포함) DB 파일 핸들을
+  // 정리한다 — AR-018.
+  process.on("exit", () => {
+    sendLog.close();
+  });
+
   await server.connect(new StdioServerTransport());
 }
 

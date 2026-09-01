@@ -2,6 +2,7 @@
 // 위해 스키마 정의를 분리했다. 태스크: docs/TASKS.md T8.
 
 import { z } from "zod";
+import { DEFAULT_SEND_LOG_LIST_LIMIT, MAX_SEND_LOG_LIST_LIMIT } from "./core/types.js";
 
 export const sheetIdSchema = z
   .string()
@@ -22,7 +23,7 @@ export const readRowsOutputSchema = {
   truncated: z.boolean(),
 };
 
-const sendStatusSchema = z.enum(["sent", "failed", "skipped_duplicate"]);
+const sendStatusSchema = z.enum(["sent", "failed", "skipped_duplicate", "sent_log_failed"]);
 
 const pipelineRowDetailSchema = z.object({
   rowIndex: z.number(),
@@ -67,4 +68,18 @@ const sendLogEntrySchema = z.object({
 /** get_send_log 도구 출력 — SendLogEntry[]를 객체로 감쌈(MCP 출력 스키마는 최상위가 객체여야 함) */
 export const getSendLogOutputSchema = {
   entries: z.array(sendLogEntrySchema),
+  truncated: z.boolean(),
 };
+
+/** get_send_log 도구 입력의 limit — 이력이 무한정 쌓여도 응답이 무제한으로 커지지 않게 상한을 둔다
+ * (docs/ADVERSARIAL_REVIEW_003.md AR-015). */
+export const sendLogLimitSchema = z
+  .number()
+  .int()
+  .positive()
+  .max(MAX_SEND_LOG_LIST_LIMIT, `limit은 최대 ${String(MAX_SEND_LOG_LIST_LIMIT)}까지입니다.`)
+  .optional()
+  .describe(
+    `반환할 최대 건수(최신순). 생략하면 ${String(DEFAULT_SEND_LOG_LIST_LIMIT)}건, ` +
+      `최대 ${String(MAX_SEND_LOG_LIST_LIMIT)}건까지 지정할 수 있습니다.`,
+  );

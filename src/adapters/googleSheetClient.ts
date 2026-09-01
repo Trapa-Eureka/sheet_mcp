@@ -245,32 +245,30 @@ export class GoogleSheetClient implements SheetClient {
 
     const quotedTab = quoteSheetName(tab);
 
-    // sentAt/messageId/error 결측은 "지운다"가 아니라 "건드리지 않는다" (DESIGN §3 StatusUpdate,
-    // InMemorySheetClient와 동일한 계약 — 감사 기록을 보존하기 위해 해당 셀은 아예 쓰지 않는다).
+    // sentAt/messageId/error는 3단계 값이다(DESIGN §3 StatusUpdate, AR-014):
+    // undefined=건드리지 않음(그 range는 아예 batchUpdate에 넣지 않음),
+    // null=명시적으로 지움(빈 문자열 기록), string=그 값으로 설정.
+    // InMemorySheetClient(mocks)와 동일한 계약.
     const data: Array<{ range: string; values: unknown[][] }> = [];
+    const pushOptionalCell = (
+      columnLetter: string,
+      rowIndex: number,
+      value: string | null | undefined,
+    ): void => {
+      if (value === undefined) return;
+      data.push({
+        range: `${quotedTab}!${columnLetter}${String(rowIndex)}`,
+        values: [[value === null ? "" : value]],
+      });
+    };
     for (const update of updates) {
       data.push({
         range: `${quotedTab}!${columnLetters._send_status}${String(update.rowIndex)}`,
         values: [[update.sendStatus]],
       });
-      if (update.sentAt !== undefined) {
-        data.push({
-          range: `${quotedTab}!${columnLetters._sent_at}${String(update.rowIndex)}`,
-          values: [[update.sentAt]],
-        });
-      }
-      if (update.messageId !== undefined) {
-        data.push({
-          range: `${quotedTab}!${columnLetters._message_id}${String(update.rowIndex)}`,
-          values: [[update.messageId]],
-        });
-      }
-      if (update.error !== undefined) {
-        data.push({
-          range: `${quotedTab}!${columnLetters._error}${String(update.rowIndex)}`,
-          values: [[update.error]],
-        });
-      }
+      pushOptionalCell(columnLetters._sent_at, update.rowIndex, update.sentAt);
+      pushOptionalCell(columnLetters._message_id, update.rowIndex, update.messageId);
+      pushOptionalCell(columnLetters._error, update.rowIndex, update.error);
     }
 
     await sheets.spreadsheets.values.batchUpdate({
