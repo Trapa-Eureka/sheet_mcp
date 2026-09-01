@@ -1,8 +1,10 @@
 // 임시 파일 DB로 SqliteSendLog를 검증한다 (파일 IO는 허용, 네트워크 아님 — docs/TESTING.md §1).
 // claim/commit/release + 소유권 토큰 + 만료 기반 수동 복구 + cursor 페이지네이션 배경:
 // docs/ADVERSARIAL_REVIEW_003.md AR-011/AR-013/AR-015,
-// docs/ADVERSARIAL_REVIEW_003_RESOLUTION_GAPS.md GAP-001/002/003/006.
+// docs/ADVERSARIAL_REVIEW_003_RESOLUTION_GAPS.md GAP-001/002/003/006,
+// docs/ADVERSARIAL_REVIEW_003_STATUS_GAPS.md STATUS-GAP-001/002.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import Database from "better-sqlite3";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -419,4 +421,207 @@ describe("SqliteSendLog", () => {
       }
     },
   );
+
+  describe("v1(T6 record) → v2(claim/commit) 자동 마이그레이션 (STATUS-GAP-001)", () => {
+    /** T6 시절의 record() 전용 스키마 DB 파일을 직접 만든다 — 마이그레이션 입력 fixture. */
+    function createLegacyV1Db(path: string): Database.Database {
+      const db = new Database(path);
+      db.exec(`
+        CREATE TABLE send_log (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          sheet_id TEXT NOT NULL,
+          tab TEXT NOT NULL,
+          row_key TEXT NOT NULL,
+          template_hash TEXT NOT NULL,
+          send_status TEXT NOT NULL,
+          sent_at TEXT NOT NULL,
+          message_id TEXT,
+          error TEXT,
+          UNIQUE (sheet_id, tab, row_key, template_hash)
+        );
+      `);
+      return db;
+    }
+
+    it("이전 send_status='sent' 기록은 committed=1로 옮겨져 wasSent/claim이 재발송을 막는다", () => {
+      const legacy = createLegacyV1Db(dbPath);
+      legacy
+        .prepare(
+          `INSERT INTO send_log (sheet_id, tab, row_key, template_hash, send_status, sent_at, message_id, error)
+           VALUES (?, ?, ?, ?, 'sent', ?, ?, NULL)`,
+        )
+        .run(SHEET, TAB, "CUST-001", HASH, "2026-08-01T00:00:00.000Z", "legacy-msg-1");
+      legacy.close();
+
+      const log = new SqliteSendLog(dbPath);
+      try {
+        expect(log.wasSent(SHEET, TAB, "CUST-001", HASH)).toBe(true);
+        expect(log.claim(SHEET, TAB, "CUST-001", HASH, CLAIMED_AT).claimed).toBe(false);
+
+        const { entries } = log.list(SHEET);
+        expect(entries).toHaveLength(1);
+        expect(entries[0]).toEqual({
+          sheetId: SHEET,
+          tab: TAB,
+          rowKey: "CUST-001",
+          templateHash: HASH,
+          sendStatus: "sent",
+          sentAt: "2026-08-01T00:00:00.000Z",
+          messageId: "legacy-msg-1",
+        });
+      } finally {
+        log.close();
+      }
+    });
+
+    it("이전 send_status='failed'/'skipped_duplicate' 기록은 옮기지 않아 재시도를 막지 않는다", () => {
+      const legacy = createLegacyV1Db(dbPath);
+      legacy
+        .prepare(
+          `INSERT INTO send_log (sheet_id, tab, row_key, template_hash, send_status, sent_at, message_id, error)
+           VALUES (?, ?, ?, ?, 'failed', ?, NULL, 'provider 오류')`,
+        )
+        .run(SHEET, TAB, "CUST-FAILED", HASH, "2026-08-01T00:00:00.000Z");
+      legacy
+        .prepare(
+          `INSERT INTO send_log (sheet_id, tab, row_key, template_hash, send_status, sent_at, message_id, error)
+           VALUES (?, ?, ?, ?, 'skipped_duplicate', ?, NULL, NULL)`,
+        )
+        .run(SHEET, TAB, "CUST-SKIPPED", HASH, "2026-08-01T00:00:00.000Z");
+      legacy.close();
+
+      const log = new SqliteSendLog(dbPath);
+      try {
+        expect(log.wasSent(SHEET, TAB, "CUST-FAILED", HASH)).toBe(false);
+        expect(log.claim(SHEET, TAB, "CUST-FAILED", HASH, CLAIMED_AT).claimed).toBe(true);
+        expect(log.wasSent(SHEET, TAB, "CUST-SKIPPED", HASH)).toBe(false);
+        expect(log.claim(SHEET, TAB, "CUST-SKIPPED", HASH, CLAIMED_AT).claimed).toBe(true);
+      } finally {
+        log.close();
+      }
+    });
+
+    it("마이그레이션 후 원본 v1 테이블은 지워지지 않고 send_log_v1_backup_*로 보존된다", () => {
+      const legacy = createLegacyV1Db(dbPath);
+      legacy
+        .prepare(
+          `INSERT INTO send_log (sheet_id, tab, row_key, template_hash, send_status, sent_at, message_id, error)
+           VALUES (?, ?, ?, ?, 'sent', ?, ?, NULL)`,
+        )
+        .run(SHEET, TAB, "CUST-001", HASH, "2026-08-01T00:00:00.000Z", "legacy-msg-1");
+      legacy.close();
+
+      const log = new SqliteSendLog(dbPath);
+      log.close();
+
+      const raw = new Database(dbPath);
+      try {
+        const backupTables = raw
+          .prepare<[], { name: string }>(
+            `SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'send_log_v1_backup_%'`,
+          )
+          .all();
+        expect(backupTables).toHaveLength(1);
+        const backupName = backupTables[0]?.name;
+        expect(backupName).toBeTruthy();
+        const backupRows = raw.prepare(`SELECT * FROM "${String(backupName)}"`).all();
+        expect(backupRows).toHaveLength(1);
+      } finally {
+        raw.close();
+      }
+    });
+
+    it(
+      "이전에 중단된 마이그레이션이 남긴 send_log_new 임시 테이블이 있으면 마이그레이션을 " +
+        "거부하고, 원본 send_log(v1)는 그대로 보존된다(트랜잭션 롤백)",
+      () => {
+        const legacy = createLegacyV1Db(dbPath);
+        legacy
+          .prepare(
+            `INSERT INTO send_log (sheet_id, tab, row_key, template_hash, send_status, sent_at, message_id, error)
+             VALUES (?, ?, ?, ?, 'sent', ?, ?, NULL)`,
+          )
+          .run(SHEET, TAB, "CUST-001", HASH, "2026-08-01T00:00:00.000Z", "legacy-msg-1");
+        legacy.exec(`CREATE TABLE send_log_new (leftover TEXT);`);
+        legacy.close();
+
+        expect(() => new SqliteSendLog(dbPath)).toThrow(/SendLog 마이그레이션 실패/);
+
+        const raw = new Database(dbPath);
+        try {
+          const cols = raw.prepare(`PRAGMA table_info(send_log)`).all() as { name: string }[];
+          expect(cols.map((c) => c.name)).toContain("send_status");
+          const rows = raw.prepare(`SELECT * FROM send_log`).all();
+          expect(rows).toHaveLength(1);
+        } finally {
+          raw.close();
+        }
+      },
+    );
+
+    it("v2(claim/commit) 스키마로 이미 만들어진 DB는 마이그레이션 없이 그대로 열린다", () => {
+      const first = new SqliteSendLog(dbPath);
+      const { token } = first.claim(SHEET, TAB, "CUST-001", HASH, CLAIMED_AT);
+      first.commit(SHEET, TAB, "CUST-001", HASH, token!, CLAIMED_AT, "msg-1");
+      first.close();
+
+      const second = new SqliteSendLog(dbPath);
+      try {
+        expect(second.list(SHEET).entries).toHaveLength(1);
+        expect(second.list(SHEET).entries[0]?.messageId).toBe("msg-1");
+      } finally {
+        second.close();
+      }
+
+      const raw = new Database(dbPath);
+      try {
+        const backupTables = raw
+          .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE '%backup%'`)
+          .all();
+        expect(backupTables).toHaveLength(0);
+      } finally {
+        raw.close();
+      }
+    });
+
+    it("알 수 없는(v1도 v2도 아닌) send_log 스키마는 명시적으로 에러를 던진다", () => {
+      const weird = new Database(dbPath);
+      weird.exec(`CREATE TABLE send_log (id INTEGER PRIMARY KEY, whatever TEXT);`);
+      weird.close();
+
+      expect(() => new SqliteSendLog(dbPath)).toThrow(/알려진 스키마.*일치하지 않습니다/);
+    });
+  });
+
+  describe("forceReleaseStaleClaim의 olderThanMs 입력 검증 (STATUS-GAP-002)", () => {
+    it.each([-1, NaN, Infinity, -Infinity, 1.5])(
+      "olderThanMs=%p는 어떤 claim도 지우지 않고 즉시 에러를 던진다",
+      (invalid) => {
+        const log = new SqliteSendLog(dbPath);
+        try {
+          const recentClaimedAt = new Date(Date.now() - 100).toISOString();
+          log.claim(SHEET, TAB, "CUST-001", HASH, recentClaimedAt);
+
+          expect(() => log.forceReleaseStaleClaim(SHEET, TAB, "CUST-001", HASH, invalid)).toThrow(
+            /olderThanMs 값이 올바르지 않습니다/,
+          );
+          // 검증에 실패했으니 claim은 그대로 남아 있어야 한다.
+          expect(log.wasSent(SHEET, TAB, "CUST-001", HASH)).toBe(true);
+        } finally {
+          log.close();
+        }
+      },
+    );
+
+    it("olderThanMs=0은 정수이자 0 이상이므로 유효한 값으로 허용된다", () => {
+      const log = new SqliteSendLog(dbPath);
+      try {
+        const oldClaimedAt = new Date(Date.now() - 1000).toISOString();
+        log.claim(SHEET, TAB, "CUST-001", HASH, oldClaimedAt);
+        expect(log.forceReleaseStaleClaim(SHEET, TAB, "CUST-001", HASH, 0)).toBe(true);
+      } finally {
+        log.close();
+      }
+    });
+  });
 });

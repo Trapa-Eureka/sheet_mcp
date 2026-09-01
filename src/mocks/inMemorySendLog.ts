@@ -11,7 +11,11 @@ import type {
   SendLogListOptions,
   SendLogListResult,
 } from "../core/types.js";
-import { DEFAULT_SEND_LOG_LIST_LIMIT, MAX_SEND_LOG_LIST_LIMIT } from "../core/types.js";
+import {
+  assertValidStaleClaimThreshold,
+  DEFAULT_SEND_LOG_LIST_LIMIT,
+  MAX_SEND_LOG_LIST_LIMIT,
+} from "../core/types.js";
 
 const KEY_SEPARATOR = " ";
 
@@ -123,6 +127,9 @@ export class InMemorySendLog implements SendLog {
     templateHash: string,
     olderThanMs: number,
   ): boolean {
+    // 음수/NaN/Infinity/소수는 어떤 claim도 건드리기 전에 거부한다 — SqliteSendLog와 같은
+    // 공통 검증 함수를 쓴다(STATUS-GAP-002).
+    assertValidStaleClaimThreshold(olderThanMs);
     const key = uniqueKey(sheetId, tab, rowKey, templateHash);
     const record = this.records.get(key);
     if (!record || record.committed) return false;

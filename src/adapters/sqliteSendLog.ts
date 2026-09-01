@@ -19,7 +19,11 @@ import type {
   SendLogListOptions,
   SendLogListResult,
 } from "../core/types.js";
-import { DEFAULT_SEND_LOG_LIST_LIMIT, MAX_SEND_LOG_LIST_LIMIT } from "../core/types.js";
+import {
+  assertValidStaleClaimThreshold,
+  DEFAULT_SEND_LOG_LIST_LIMIT,
+  MAX_SEND_LOG_LIST_LIMIT,
+} from "../core/types.js";
 
 const sendLogRowSchema = z.object({
   id: z.number(),
@@ -55,21 +59,87 @@ function parseCursor(cursor: string | undefined): number | undefined {
   return id;
 }
 
-export class SqliteSendLog implements SendLog {
-  private readonly db: Database.Database;
+const CREATE_SEND_LOG_SQL = `
+  CREATE TABLE IF NOT EXISTS send_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sheet_id TEXT NOT NULL,
+    tab TEXT NOT NULL,
+    row_key TEXT NOT NULL,
+    template_hash TEXT NOT NULL,
+    claim_token TEXT NOT NULL,
+    committed INTEGER NOT NULL DEFAULT 0,
+    sent_at TEXT NOT NULL,
+    message_id TEXT,
+    UNIQUE (sheet_id, tab, row_key, template_hash)
+  );
+`;
 
-  constructor(dbPath?: string) {
-    const path = dbPath ?? process.env.SEND_LOG_PATH ?? "./data/sendlog.db";
-    if (path !== ":memory:") {
-      mkdirSync(dirname(path), { recursive: true });
+export type SchemaVersion = "none" | "v1_record" | "v2_claim";
+
+// T6(record 전용) 스키마와 GAP-001 재설계(claim/commit/release) 스키마를 컬럼 존재 여부로 구분한다.
+// PRAGMA table_info는 파라미터 바인딩을 지원하지 않지만 리터럴이 없는 고정 SQL이라 인젝션 위험이
+// 없다. scripts/recoverStaleClaim.ts가 read-only 조회에도 그대로 재사용한다(STATUS-GAP-003).
+export function detectSchemaVersion(db: Database.Database): SchemaVersion {
+  const tableExists = db
+    .prepare<[], { name: string }>(
+      `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'send_log'`,
+    )
+    .get();
+  if (!tableExists) return "none";
+
+  const columns = db.prepare<[], { name: string }>(`PRAGMA table_info(send_log)`).all();
+  const names = new Set(columns.map((c) => c.name));
+  if (names.has("claim_token") && names.has("committed")) return "v2_claim";
+  if (names.has("send_status")) return "v1_record";
+  throw new Error(
+    "SendLog: 'send_log' 테이블이 이미 있지만 알려진 스키마(v1 record 또는 v2 claim/commit)와 " +
+      "일치하지 않습니다. DB 파일이 손상됐거나 다른 도구가 만든 테이블일 수 있습니다. DB 파일을 " +
+      "백업한 뒤 send_log 테이블 구조를 직접 확인하세요.",
+  );
+}
+
+interface LegacyV1SentRow {
+  sheet_id: string;
+  tab: string;
+  row_key: string;
+  template_hash: string;
+  sent_at: string;
+  message_id: string | null;
+}
+
+/**
+ * T6에서 쓰던 record() 전용 v1 스키마(send_status/error 컬럼)를 GAP-001 이후의 claim/commit
+ * v2 스키마로 옮긴다 — docs/ADVERSARIAL_REVIEW_003_STATUS_GAPS.md STATUS-GAP-001.
+ *
+ * - send_status='sent'였던 행만 committed=1인 확정 기록으로 옮긴다. 그래야 과거에 실제로 보낸
+ *   메일이 마이그레이션 후에도 wasSent()=true / claim()=false로 남아 중복 발송을 막는다.
+ * - send_status='failed'/'skipped_duplicate'였던 행은 옮기지 않는다. v1은 UNIQUE 제약 때문에
+ *   한 번 실패로 기록되면 같은 키를 다시는 재시도할 수 없었다(이 자체가 AR-011/GAP-001이
+ *   고치려던 버그) — 그 버그를 새 스키마로 그대로 옮기면 안 된다.
+ * - claim_token은 실제 소유권 검증에 쓰이지 않는(과거 기록이라 아무도 그 token으로 commit/release를
+ *   부르지 않는) 마이그레이션 전용 값을 새로 발급한다.
+ * - 옛 테이블은 지우지 않고 send_log_v1_backup_<타임스탬프>로 이름만 바꿔 보존한다.
+ * - 전체를 한 트랜잭션으로 묶어서, 중간에 실패하면(예: 이전에 중단된 마이그레이션이 남긴
+ *   send_log_new 임시 테이블과 충돌) better-sqlite3가 자동으로 롤백해 원본 send_log를 그대로
+ *   되돌려 놓는다 — 부분 마이그레이션으로 데이터가 섞이는 상태를 만들지 않는다.
+ */
+function migrateV1ToV2(db: Database.Database): void {
+  const migrate = db.transaction(() => {
+    const staleTemp = db
+      .prepare<[], { name: string }>(
+        `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'send_log_new'`,
+      )
+      .get();
+    if (staleTemp) {
+      throw new Error(
+        "'send_log_new' 임시 테이블이 이미 존재합니다. 이전 마이그레이션 시도가 도중에 중단됐을 " +
+          "수 있습니다. DB 파일을 백업한 뒤 send_log_new 테이블 내용을 확인하고, 필요 없으면 " +
+          "'DROP TABLE send_log_new;'로 지운 다음 서버를 다시 시작하세요.",
+      );
     }
-    this.db = new Database(path);
-    this.db.pragma("journal_mode = WAL");
-    // claim/commit 재설계(GAP-001)로 스키마가 바뀌었다 — v0.1은 아직 릴리스 전이라 기존 로컬
-    // DB 파일과의 하위호환 마이그레이션은 두지 않는다. 개발 중 만든 data/sendlog.db가 있다면
-    // 지우고 다시 만들면 된다.
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS send_log (
+
+    db.exec(`
+      CREATE TABLE send_log_new (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         sheet_id TEXT NOT NULL,
         tab TEXT NOT NULL,
@@ -82,6 +152,77 @@ export class SqliteSendLog implements SendLog {
         UNIQUE (sheet_id, tab, row_key, template_hash)
       );
     `);
+
+    const legacySentRows = db
+      .prepare<[], LegacyV1SentRow>(
+        `SELECT sheet_id, tab, row_key, template_hash, sent_at, message_id
+         FROM send_log WHERE send_status = 'sent'`,
+      )
+      .all();
+
+    const insert = db.prepare<[string, string, string, string, string, string, string | null]>(
+      `INSERT INTO send_log_new
+         (sheet_id, tab, row_key, template_hash, claim_token, committed, sent_at, message_id)
+       VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
+    );
+    for (const row of legacySentRows) {
+      insert.run(
+        row.sheet_id,
+        row.tab,
+        row.row_key,
+        row.template_hash,
+        `migrated-${randomUUID()}`,
+        row.sent_at,
+        row.message_id,
+      );
+    }
+
+    const backupTableName = `send_log_v1_backup_${Date.now()}_${randomUUID().replace(/-/g, "").slice(0, 8)}`;
+    db.exec(`ALTER TABLE send_log RENAME TO "${backupTableName}";`);
+    db.exec(`ALTER TABLE send_log_new RENAME TO send_log;`);
+
+    return { migratedCount: legacySentRows.length, backupTableName };
+  });
+
+  let result: { migratedCount: number; backupTableName: string };
+  try {
+    result = migrate();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `SendLog 마이그레이션 실패: 기존 send_log(v1) 스키마를 새 스키마(v2)로 옮기지 못했습니다 — ${msg} ` +
+        "트랜잭션이 롤백돼 원본 send_log 테이블은 그대로 보존됐습니다. 위 원인을 해결한 뒤 서버를 " +
+        "다시 시작하세요.",
+    );
+  }
+  // stdout은 MCP JSON-RPC 프레이밍 전용이라 여기서도 stderr(console.error)로만 남긴다.
+  console.error(
+    `[sheet-mcp] SendLog: 기존 send_log(v1) 스키마를 감지해 새 스키마(v2)로 마이그레이션했습니다. ` +
+      `과거 'sent' 기록 ${result.migratedCount}건만 옮겨졌고(failed/skipped_duplicate는 옮기지 않음), ` +
+      `원본 테이블은 '${result.backupTableName}'로 보존됩니다.`,
+  );
+}
+
+export class SqliteSendLog implements SendLog {
+  private readonly db: Database.Database;
+
+  constructor(dbPath?: string) {
+    const path = dbPath ?? process.env.SEND_LOG_PATH ?? "./data/sendlog.db";
+    if (path !== ":memory:") {
+      mkdirSync(dirname(path), { recursive: true });
+    }
+    this.db = new Database(path);
+    this.db.pragma("journal_mode = WAL");
+
+    const version = detectSchemaVersion(this.db);
+    if (version === "none") {
+      this.db.exec(CREATE_SEND_LOG_SQL);
+    } else if (version === "v1_record") {
+      // STATUS-GAP-001: 예전엔 "지우고 다시 만들라"고만 안내했다 — 실제로는 과거 발송 이력이
+      // 사라져 재발송 위험이 있는 파괴적 지시였다. 이제는 기존 데이터를 보존하며 자동 변환한다.
+      migrateV1ToV2(this.db);
+    }
+    // v2_claim: 이미 현재 스키마이므로 아무 것도 하지 않는다.
   }
 
   wasSent(sheetId: string, tab: string, rowKey: string, templateHash: string): boolean {
@@ -172,6 +313,9 @@ export class SqliteSendLog implements SendLog {
     templateHash: string,
     olderThanMs: number,
   ): boolean {
+    // 음수/NaN/Infinity/소수는 어떤 claim도 건드리기 전에 거부한다(STATUS-GAP-002) — 검증을
+    // 통과하지 못하면 cutoffIso 계산도, DELETE도 실행되지 않는다.
+    assertValidStaleClaimThreshold(olderThanMs);
     // committed=0(아직 확정 안 된 claim)이고, sent_at(=claim 시각)이 cutoff보다 오래된 경우에만
     // 지운다 — 확정된(sent) 기록은 어떤 경우에도 건드리지 않는다.
     const cutoffIso = new Date(Date.now() - olderThanMs).toISOString();

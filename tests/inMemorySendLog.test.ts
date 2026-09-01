@@ -259,6 +259,30 @@ describe("InMemorySendLog", () => {
     expect(log.claim(SHEET, "orders", "CUST-001", HASH, CLAIMED_AT).claimed).toBe(true);
     expect(log.claim(SHEET, "customers", "CUST-002", HASH, CLAIMED_AT).claimed).toBe(true);
   });
+
+  describe("forceReleaseStaleClaim의 olderThanMs 입력 검증 (STATUS-GAP-002)", () => {
+    it.each([-1, NaN, Infinity, -Infinity, 1.5])(
+      "olderThanMs=%p는 어떤 claim도 지우지 않고 즉시 에러를 던진다 — SqliteSendLog와 동일한 " +
+        "공통 검증 함수를 쓴다",
+      (invalid) => {
+        const log = new InMemorySendLog();
+        const recentClaimedAt = new Date(Date.now() - 100).toISOString();
+        log.claim(SHEET, TAB, "CUST-001", HASH, recentClaimedAt);
+
+        expect(() => log.forceReleaseStaleClaim(SHEET, TAB, "CUST-001", HASH, invalid)).toThrow(
+          /olderThanMs 값이 올바르지 않습니다/,
+        );
+        expect(log.wasSent(SHEET, TAB, "CUST-001", HASH)).toBe(true);
+      },
+    );
+
+    it("olderThanMs=0은 정수이자 0 이상이므로 유효한 값으로 허용된다", () => {
+      const log = new InMemorySendLog();
+      const oldClaimedAt = new Date(Date.now() - 1000).toISOString();
+      log.claim(SHEET, TAB, "CUST-001", HASH, oldClaimedAt);
+      expect(log.forceReleaseStaleClaim(SHEET, TAB, "CUST-001", HASH, 0)).toBe(true);
+    });
+  });
 });
 
 /** claim() + commit()을 한 번에 — 테스트에서 "이미 확정 발송된 행 하나"를 빠르게 만들기 위한 헬퍼. */

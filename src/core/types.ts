@@ -110,6 +110,24 @@ export interface ClaimResult {
 }
 
 /**
+ * forceReleaseStaleClaim()의 olderThanMs를 호출 즉시 검증한다 — 어댑터(SqliteSendLog/InMemorySendLog)
+ * 양쪽이 이 함수 하나만 공유해서 쓴다(docs/ADVERSARIAL_REVIEW_003_STATUS_GAPS.md STATUS-GAP-002).
+ * 음수를 주면 cutoff가 미래가 되어 방금 만든 최신 claim까지 "오래된 claim"으로 오판해 즉시
+ * 회수(삭제)해버릴 수 있다 — 다른 실행이 그 직후 같은 행을 다시 claim해 중복 발송으로 이어진다.
+ * NaN/Infinity/소수도 같은 이유로 거부한다. 검증에 실패하면 어떤 claim도 건드리기 전에 던진다.
+ */
+export function assertValidStaleClaimThreshold(olderThanMs: number): void {
+  if (!Number.isInteger(olderThanMs) || olderThanMs < 0) {
+    throw new Error(
+      `forceReleaseStaleClaim: olderThanMs 값이 올바르지 않습니다 (받은 값: ${olderThanMs}). ` +
+        "0 이상의 정수(밀리초 단위)만 허용합니다. 예: 30 * 60 * 1000 (30분). " +
+        "음수/NaN/Infinity/소수는 최근 claim까지 '오래됨'으로 잘못 판정해 중복 발송으로 이어질 " +
+        "수 있어 거부됩니다 — 아무 claim도 삭제되지 않았습니다.",
+    );
+  }
+}
+
+/**
  * SendLog — docs/ADVERSARIAL_REVIEW_003.md AR-011/AR-013, 이후
  * docs/ADVERSARIAL_REVIEW_003_RESOLUTION_GAPS.md GAP-001/002/003/006 대응으로 claim/commit/release
  * 3단계 + 소유권 토큰 + 만료 기반 수동 복구로 재설계됐다.

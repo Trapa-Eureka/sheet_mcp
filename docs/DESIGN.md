@@ -54,6 +54,21 @@ SheetClient TemplateEngine NotificationProvider SendLog
 - 상태 컬럼 3가지 값의 결측 처리 정책(AR-014): `sent`가 되면 과거 `_error`는 지운다. `failed`가 되면
   과거 `_sent_at`/`_message_id`는 **보존**한다(그 행이 예전에 실제로 발송된 적 있다는 감사 기록은
   새 템플릿의 실패 시도로 지워지지 않는다). `skipped_duplicate`는 아무 것도 건드리지 않는다.
+- **정책 결정(STATUS-GAP-004, GAP-005 후속)**: 위 보존 정책 때문에 한 행에 `_send_status=failed`와
+  과거 성공의 `_message_id`/`_sent_at`이 동시에 남을 수 있다. 4개 상태 컬럼만 보고 "이 행이 지금
+  성공 상태인지"를 판단하면 착각할 수 있으므로, 다음을 확정된 계약으로 둔다(위 세 옵션 중
+  "현재 혼합 정책 유지 + 계약 명확화"를 선택):
+  - `_send_status`는 **항상 가장 최근 실행(마지막 시도)** 의 결과만 나타낸다. `sent`/`sent_log_failed`
+    일 때만 "지금 발송된 상태"로 해석해야 하고, `failed`/`skipped_duplicate`일 때 `_message_id`/
+    `_sent_at`이 채워져 있어도 **그건 과거 시도의 감사 기록이지 이번 실행이 성공했다는 뜻이 아니다**.
+  - 시트만 보고 자동화(다른 스크립트, 사람의 리포트)를 만들 때는 반드시 `_send_status`만으로
+    성공/실패를 판정해야 한다. `_message_id`/`_sent_at`이 값을 가진다는 사실만으로 "발송 성공"을
+    추론하면 안 된다.
+  - "이 행/템플릿 조합이 과거에 실제로 발송된 적이 있는가"가 필요하면 시트가 아니라
+    `SendLog.wasSent()`/`list()`(get_send_log MCP 도구)를 조회해야 한다 — SendLog가 진실의
+    원천이고, 시트 상태 컬럼은 사람이 보기 위한 스냅샷일 뿐이다.
+  - 시트 스키마(컬럼 4개)를 "마지막 시도"/"마지막 성공" 2세트로 분리하는 안(옵션 B)은 채택하지
+    않는다 — 기존 시트 사용자에게 마이그레이션 부담을 주는 변경이라 v0.1에서는 보류한다.
 
 ## 3. 핵심 인터페이스 (TS 시그니처)
 
@@ -268,6 +283,28 @@ renderTemplate(template: string, values: Record<string, string>): RenderResult
   `claim_token`(소유권 토큰)과 `committed`(0/1, claimed/sent 구분) 컬럼을 둔다. `close()`는 멱등이라
   (better-sqlite3 자체 보장, 수동 검증됨) 여러 종료 경로(정상/SIGINT/SIGTERM/`exit`)에서 겹쳐
   불려도 안전하다(AR-018/GAP-008).
+  - **기존 DB 업그레이드(STATUS-GAP-001)**: T6 시절의 `record()` 전용 v1 스키마(`send_status`/
+    `error` 컬럼, `claim_token`/`committed` 없음)로 만들어진 `sendlog.db`를 그대로 열어도 생성자가
+    자동으로 v2(claim/commit) 스키마로 마이그레이션한다. 과거 `send_status='sent'`였던 행만
+    `committed=1`인 확정 기록으로 옮기고(그래야 과거 발송분이 마이그레이션 후에도 중복 발송을
+    계속 막는다), `failed`/`skipped_duplicate` 행은 옮기지 않는다(v1은 UNIQUE 제약 때문에 한 번
+    실패하면 영구히 재시도가 막히는 버그가 있었고, 그 버그를 새 스키마로 옮기면 안 되기 때문).
+    원본 v1 테이블은 지우지 않고 `send_log_v1_backup_<timestamp>_<random>`으로 이름만 바꿔 그대로
+    남긴다. 전체가 하나의 트랜잭션이라 중간에 실패하면(예: 이전에 중단된 마이그레이션이 남긴
+    `send_log_new` 임시 테이블과 충돌) 원본 `send_log`가 그대로 롤백돼 보존되고, 생성자가
+    에이전트 친화적 에러로 원인과 조치를 안내하며 실패한다(fail-fast). 데이터 손실 없이 자동
+    전환되므로 "DB 파일을 지우고 다시 만들라"는 예전 안내는 더 이상 필요/권장하지 않는다.
+  - **stale claim 복구(STATUS-GAP-002/003)**: `forceReleaseStaleClaim(olderThanMs)`는 이제
+    `olderThanMs`가 0 이상의 정수가 아니면(음수/NaN/Infinity/소수) 어떤 claim도 건드리기 전에
+    즉시 에러를 던진다 — 음수를 잘못 넘기면 cutoff가 미래가 되어 방금 만든 최신 claim까지
+    "오래됨"으로 오판해 삭제해버리는 사고를 막는다(InMemorySendLog와 공통 검증 함수
+    `assertValidStaleClaimThreshold()`를 공유). 이 내부 API를 사람이 직접 안전하게 쓸 수 있도록
+    `npm run recover:stale-claim`(`scripts/recoverStaleClaim.ts`) 운영 CLI를 제공한다: 기본은
+    `--confirm` 없이 DB를 **readonly로 열어** 조회만 하고, 5분 미만의 `--older-than-ms`는
+    `--i-understand-the-risk` 없이 거부하며, 모든 조회·회수 실행을 `data/recovery-audit.log`(JSON
+    Lines, `RECOVERY_AUDIT_LOG_PATH`로 재지정 가능)에 남긴다. MCP 도구로는 여전히 노출하지 않는다
+    (§3 SendLog 인터페이스 주석 참고 — 자율 에이전트가 "발송됐을 수도 있는" claim을 스스로
+    회수 가능하게 만들면 안 된다는 원칙은 그대로다).
 
 `npm run dev`/`npm run smoke`는 시작 시 `dotenv`로 `.env`를 로드한다(이미 설정된 실제 프로세스
 환경변수는 덮어쓰지 않음). `createServer()`를 단독 import하는 테스트 경로에서는 절대 로드하지

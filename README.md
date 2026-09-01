@@ -60,6 +60,18 @@ npm run dev           # MCP 서버 stdio 실행 (.env 시크릿 필요 — 아�
 스모크용으로 바로 쓸 수 있다. 발송 결과는 이 탭 끝에 `_send_status`/`_sent_at`/`_message_id`/`_error`
 4개 컬럼으로 자동 기록되며, 사용자 데이터 컬럼은 절대 수정되지 않는다.
 
+## 운영 — 기존 DB 업그레이드 / stale claim 복구
+
+- **기존 `sendlog.db` 업그레이드**: 서버(`npm run dev`)나 스모크(`npm run smoke`)를 새 버전 코드로
+  다시 실행하면 `SqliteSendLog`가 기존 DB 스키마를 자동 감지해 무손실로 새 스키마로 마이그레이션한다
+  (원본은 `send_log_v1_backup_*` 테이블로 보존). 사람이 따로 할 일은 없다. 상세 동작은
+  `docs/DESIGN.md` §6.
+- **claim이 오래 걸려 있을 때(정상 종료 없이 프로세스가 죽은 경우 등)**: 절대 DB 파일을 직접
+  손대지 말고 `npm run recover:stale-claim -- --db ./data/sendlog.db --sheet-id <id> --tab <tab> --row-key <key> --template-hash <hash>`
+  로 먼저 조회한다(기본은 읽기 전용, 아무 것도 지우지 않음). 회수하려면 `--older-than-ms`와
+  `--confirm`을 추가한다. 자세한 옵션과 안전장치는 `scripts/recoverStaleClaim.ts` 상단 주석과
+  `docs/DESIGN.md` §6을 참고.
+
 ## 상태
 
 진행 상태는 여기 수동으로 적지 않는다 — `docs/TASKS.md`의 각 태스크 상태(`DONE(날짜)`/`TODO`)가

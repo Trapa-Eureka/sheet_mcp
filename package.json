@@ -16,7 +16,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "dev": "tsx src/server.ts",
-    "smoke": "tsx scripts/smoke.ts"
+    "smoke": "tsx scripts/smoke.ts",
+    "recover:stale-claim": "tsx scripts/recoverStaleClaim.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
