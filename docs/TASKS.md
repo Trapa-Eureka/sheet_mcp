@@ -114,18 +114,36 @@
   실행해 완전히 동일한 에러 메시지·종료 코드(`GOOGLE_SERVICE_ACCOUNT_JSON 환경변수가 없습니다...`,
   exit 1)를 확인함(동작 동치성 수동 검증).
 
-### T12 — 배포 메타데이터 + 로컬 패키지 검증 · 상태: TODO · 의존: T11
+### T12 — 배포 메타데이터 + 로컬 패키지 검증 · 상태: DONE(2026-09-01) · 의존: T11
 
 - 목표: `package.json`을 npm 배포 가능한 형태로 정리하고, 실제로 tarball을 만들어 로컬에서
   `npx`로 설치·실행되는지 검증한다.
 - 완료 기준:
-  [ ] `"private": true` 제거
-  [ ] `"bin": {"sheet-mcp": "./dist/server.js"}` 추가
-  [ ] `"files"`로 배포에 포함할 대상을 `dist/`, `.env.example` 등으로 제한(src/tests/docs 제외)
-  [ ] `"prepublishOnly"`가 `npm run check && npm run build`를 실행하도록 연결
-  [ ] `npm pack`으로 만든 tarball을 별도 임시 디렉터리에서 `npm install -g <tarball>` 또는
+  [x] `"private": true` 제거
+  [x] `"bin": {"sheet-mcp": "./dist/server.js"}` 추가
+  [x] `"files"`로 배포에 포함할 대상을 `dist/`, `.env.example` 등으로 제한(src/tests/docs 제외)
+  [x] `"prepublishOnly"`가 `npm run check && npm run build`를 실행하도록 연결
+  [x] `npm pack`으로 만든 tarball을 별도 임시 디렉터리에서 `npm install -g <tarball>` 또는
   `npx <tarball 경로>`로 설치해 실제로 MCP 서버가 기동되는지 확인(자격증명 없이 fail-fast까지)
-  [ ] `npm run check` 통과
+  [x] `npm run check` 통과
+- `"prepack": "npm run build"`도 함께 추가했다(완료 기준엔 없었지만 `npm pack` 단독 실행 시에도
+  `dist/`가 자동으로 최신 상태로 빌드되게 하기 위함 — `prepublishOnly`는 `npm publish`에서만
+  실행되고 `npm pack`에서는 실행되지 않아, 이게 없으면 stale `dist/`를 그대로 패키징할 위험이 있었다).
+- **재검증 중 심각한 버그 발견·수정**: `npm pack` → `npm install <tarball>` → `./node_modules/.bin/sheet-mcp`
+  실행으로 실제 검증하던 중, 서버가 **아무 출력도 에러도 없이 exit code 0으로 조용히 종료**되는
+  것을 발견했다. 원인은 `src/server.ts`의 진입점 가드 `process.argv[1] === fileURLToPath(import.meta.url)`
+  — npm이 `bin` 필드로 만드는 실행 파일은 실제 파일이 아니라 심볼릭 링크인데, Node ESM 로더는
+  `import.meta.url`을 항상 실제 파일의 realpath로 해석하는 반면 `process.argv[1]`은 호출에 쓰인
+  심볼릭 링크 경로 그대로 남아 두 값이 절대 같아지지 않는다 — 그 결과 `main()`이 전혀 호출되지
+  않았다. `npx sheet-mcp`/전역 설치 후 실행 등 npm이 만드는 모든 실행 경로가 이 문제에 해당돼,
+  **T11~T13 전체의 목표(npx로 clone 없이 쓰기)가 그 자체로 무력화되는 버그**였다.
+  `realpathSync(process.argv[1])`로 심볼릭 링크를 해석한 뒤 비교하도록 고쳤고,
+  `tests/serverEntrypointSymlink.test.ts`(신규, `dist/` 빌드 없이 `tsx` + 심볼릭 링크로 동일 상황을
+  재현)로 회귀 가드를 추가했다 — 수정 전 코드로 되돌려 이 테스트가 실제로 실패하는지도 확인함.
+- 최종 검증: 실제 `npm pack` → `npm install <tarball>`(로컬) → `./node_modules/.bin/sheet-mcp` 및
+  `npx --package=<tarball> sheet-mcp` 양쪽 경로 모두 자격증명 없이 `node dist/server.js`/
+  `tsx src/server.ts`와 동일한 fail-fast 에러·종료 코드 1을 반환함을 확인. `npm run check` 175 tests
+  (기존 174 + 회귀 가드 1) 전부 통과.
 
 ### T13 — 설치 방식 문서 갱신 · 상태: TODO · 의존: T12
 

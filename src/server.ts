@@ -1,6 +1,7 @@
 // MCP 서버 진입점. 도구 4종 등록만 담당한다 — 비즈니스 로직은 core/에 있고 여기서는
 // zod 입력/출력 검증 -> core 함수 호출 -> 결과 직렬화만 조립한다 (DESIGN §5, 태스크: docs/TASKS.md T8).
 
+import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { config as loadDotenv } from "dotenv";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -188,7 +189,19 @@ async function main(): Promise<void> {
 
 // tsx/node로 이 파일을 직접 실행할 때만(`npm run dev`) 서버를 기동한다. import(테스트 등)만으로는
 // 실행되지 않는다 — createServer()가 실제 어댑터 생성 없이 독립적으로 테스트 가능한 이유다.
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+//
+// process.argv[1]을 realpathSync로 심볼릭 링크까지 해석한 뒤 비교해야 한다(T12 npm pack 로컬 설치
+// 검증 중 발견): npm이 `bin` 필드로 만드는 실행 파일(`node_modules/.bin/sheet-mcp`)은 실제 파일이
+// 아니라 dist/server.js를 가리키는 심볼릭 링크다. Node ESM 로더는 import.meta.url을 항상 실제
+// 파일의 realpath로 해석하는 반면, process.argv[1]은 "호출에 쓰인 경로"(심볼릭 링크 경로) 그대로
+// 남는다. realpath 비교 없이 문자열을 그대로 비교하면 심볼릭 링크로 실행했을 때(`npx sheet-mcp`,
+// 전역 설치 후 `sheet-mcp` 실행 등 npm이 만드는 모든 경로) 이 조건이 항상 false가 되어 main()이
+// 전혀 호출되지 않고 프로세스가 아무 출력도, 에러도 없이 조용히 종료된다 — 배포 목적 자체가
+// 무력화되는 심각한 버그라 발견 즉시 고친다.
+if (
+  process.argv[1] !== undefined &&
+  realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)
+) {
   main().catch((err: unknown) => {
     console.error("sheet-mcp: 서버 기동 실패:", err instanceof Error ? err.message : err);
     process.exitCode = 1;
