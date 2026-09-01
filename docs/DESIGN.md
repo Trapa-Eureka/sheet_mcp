@@ -57,7 +57,9 @@ export interface SheetRow { rowIndex: number; values: Record<string, string> }
 
 export type SendStatus = "sent" | "failed" | "skipped_duplicate";
 
-// writeStatus가 시트에 반영하는 상태 컬럼 4개(§2)를 행 단위로 표현
+// writeStatus가 시트에 반영하는 상태 컬럼 4개(§2)를 행 단위로 표현.
+// sentAt/messageId/error가 결측(undefined)이면 "빈 값으로 지운다"가 아니라 "그 컬럼은 건드리지 않는다"는 뜻이다.
+// (예: sent 후 같은 행이 다시 skipped_duplicate로 기록돼도 원래 _sent_at/_message_id는 감사 기록으로 남아야 한다.)
 export interface StatusUpdate {
   rowIndex: number; sendStatus: SendStatus; sentAt?: string; messageId?: string; error?: string;
 }

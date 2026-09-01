@@ -2,8 +2,9 @@
 // 결정론 유지를 위해 Math.random/Date.now를 쓰지 않고 인덱스 기반으로 값을 만든다.
 // 실행: npx tsx scripts/genLargeFixture.ts
 
-import { writeFileSync } from "node:fs";
+import { renameSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { sheetFixtureFileSchema } from "../src/mocks/inMemorySheetClient.js";
 
 const ROW_COUNT = 1000;
 const SHOPS = ["ABC Trading", "Cebu Hardware", "Davao Supplies"] as const;
@@ -15,7 +16,8 @@ function buildRow(index: number): Record<string, string> {
   return {
     customer_id: `CUST-${String(n).padStart(4, "0")}`,
     name: `Customer ${String(n)}`,
-    email: `customer${String(n)}@example.ph`,
+    // .invalid는 RFC 2606 예약 도메인 — 실발송 안전장치가 뚫리더라도 실제 수신자에게 닿지 않는다
+    email: `customer${String(n)}@example.invalid`,
     amount: `₱${amount}`,
     due: `2026-09-${dueDay}`,
     status: n % 5 === 0 ? "paid" : "unpaid",
@@ -44,9 +46,16 @@ function buildFixture(): unknown {
 
 function main(): void {
   const outPath = fileURLToPath(new URL("../fixtures/sheets/large-1000.json", import.meta.url));
-  const fixture = buildFixture();
-  writeFileSync(outPath, JSON.stringify(fixture, null, 2) + "\n", "utf-8");
-  console.log(`생성 완료: ${outPath} (${String(ROW_COUNT)}행)`);
+  const tmpPath = `${outPath}.tmp`;
+
+  // 생성기 자체의 스키마 드리프트를 잡기 위해, 쓰기 전에 fixture 로더와 동일한 zod 스키마로 검증한다
+  const fixture = sheetFixtureFileSchema.parse(buildFixture());
+
+  // 직렬화 실패/중단 시에도 기존 커밋된 fixture가 잘린 채로 남지 않도록 임시 파일에 먼저 쓰고 rename한다
+  writeFileSync(tmpPath, JSON.stringify(fixture, null, 2) + "\n", "utf-8");
+  renameSync(tmpPath, outPath);
+
+  console.log(`생성 완료: ${outPath} (${String(ROW_COUNT)}행, 스키마 검증 통과)`);
 }
 
 main();

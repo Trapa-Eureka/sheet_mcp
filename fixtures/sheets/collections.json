@@ -15,7 +15,7 @@
       {
         "customer_id": "CUST-001",
         "name": "Juan Dela Cruz",
-        "email": "juan.delacruz@abctrading.ph",
+        "email": "juan.delacruz@example.invalid",
         "amount": "₱1,200.00",
         "due": "2026-09-15",
         "status": "unpaid",
@@ -25,7 +25,7 @@
       {
         "customer_id": "CUST-002",
         "name": "Maria Santos",
-        "email": "maria.santos@cebuhardware.ph",
+        "email": "maria.santos@example.invalid",
         "amount": "₱850.50",
         "due": "2026-09-10",
         "status": "unpaid",
@@ -35,7 +35,7 @@
       {
         "customer_id": "CUST-003",
         "name": "Ramon Reyes",
-        "email": "ramon.reyes@example.ph",
+        "email": "ramon.reyes@example.invalid",
         "amount": "₱300.00",
         "due": "2026-09-20",
         "status": "paid",
@@ -45,7 +45,7 @@
       {
         "customer_id": "CUST-004",
         "name": "Liza Bautista",
-        "email": "liza.bautista@example.ph",
+        "email": "liza.bautista@example.invalid",
         "amount": "₱4,500.75",
         "due": "2026-09-05",
         "status": "unpaid",
@@ -55,7 +55,7 @@
       {
         "customer_id": "CUST-005",
         "name": "Mark Villanueva",
-        "email": "mark.villanueva@example.ph",
+        "email": "mark.villanueva@example.invalid",
         "amount": "₱0.00",
         "due": "2026-09-25",
         "status": "paid",
@@ -65,7 +65,7 @@
       {
         "customer_id": "CUST-006",
         "name": "Grace Fernandez",
-        "email": "grace.fernandez@example.ph",
+        "email": "grace.fernandez@example.invalid",
         "amount": "₱2,200.00",
         "due": "2026-09-12",
         "status": "unpaid",
@@ -75,7 +75,7 @@
       {
         "customer_id": "CUST-007",
         "name": "Noel Aquino",
-        "email": "noel.aquino@example.ph",
+        "email": "noel.aquino@example.invalid",
         "amount": "₱175.25",
         "due": "2026-09-18",
         "status": "unpaid",
@@ -85,7 +85,7 @@
       {
         "customer_id": "CUST-008",
         "name": "Carmela Torres",
-        "email": "carmela.torres@example.ph",
+        "email": "carmela.torres@example.invalid",
         "amount": "₱990.00",
         "due": "2026-09-08",
         "status": "unpaid",
@@ -95,7 +95,7 @@
       {
         "customer_id": "CUST-009",
         "name": "Danilo Cruz",
-        "email": "danilo.cruz@example.ph",
+        "email": "danilo.cruz@example.invalid",
         "amount": "₱60.00",
         "due": "2026-09-22",
         "status": "paid",
@@ -105,7 +105,7 @@
       {
         "customer_id": "CUST-010",
         "name": "Rosario Mendoza",
-        "email": "rosario.mendoza@example.ph",
+        "email": "rosario.mendoza@example.invalid",
         "amount": "₱3,300.00",
         "due": "2026-09-14",
         "status": "unpaid",
@@ -115,7 +115,7 @@
       {
         "customer_id": "CUST-011",
         "name": "Paolo Ramos",
-        "email": "paolo.ramos@example.ph",
+        "email": "paolo.ramos@example.invalid",
         "amount": "₱725.00",
         "due": "2026-09-16",
         "status": "unpaid",
@@ -125,7 +125,7 @@
       {
         "customer_id": "CUST-012",
         "name": "Elena Garcia",
-        "email": "elena.garcia@example.ph",
+        "email": "elena.garcia@example.invalid",
         "amount": "₱150.00",
         "due": "2026-09-11",
         "status": "unpaid",

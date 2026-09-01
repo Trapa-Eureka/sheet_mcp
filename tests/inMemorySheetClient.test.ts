@@ -4,6 +4,7 @@ import { InMemorySheetClient, loadFixtureFile } from "../src/mocks/inMemorySheet
 import type { SheetFixture } from "../src/mocks/inMemorySheetClient.js";
 
 const COLLECTIONS_FIXTURE_PATH = path.resolve(process.cwd(), "fixtures/sheets/collections.json");
+const LARGE_FIXTURE_PATH = path.resolve(process.cwd(), "fixtures/sheets/large-1000.json");
 
 function simpleFixture(): SheetFixture {
   return {
@@ -47,11 +48,30 @@ describe("InMemorySheetClient", () => {
     expect(rows[1]?.rowIndex).toBe(3);
   });
 
-  it("readConfig/readRows는 내부 상태의 복사본을 반환한다 (외부에서 변형해도 영향 없음)", async () => {
+  it("readRows가 반환한 행을 변형해도 내부 상태에 영향이 없다 (재조회 시 원본 유지)", async () => {
     const rows = await client.readRows("sheet-1", "customers");
     rows[0]!.values.name = "MUTATED";
     const rowsAgain = await client.readRows("sheet-1", "customers");
     expect(rowsAgain[0]?.values.name).toBe("Alice");
+  });
+
+  it("readConfig가 반환한 객체를 변형해도 내부 상태에 영향이 없다", async () => {
+    const config = await client.readConfig("sheet-1");
+    config.channel = "MUTATED";
+    const configAgain = await client.readConfig("sheet-1");
+    expect(configAgain.channel).toBe("email");
+  });
+
+  it("loadSheet에 넘긴 원본 fixture 객체를 나중에 변형해도 내부 상태에 영향이 없다", async () => {
+    const fixture = simpleFixture();
+    client.loadSheet("sheet-3", fixture);
+    fixture.notifyConfig.channel = "MUTATED";
+    fixture.tabs.customers![0]!.name = "MUTATED";
+
+    const config = await client.readConfig("sheet-3");
+    const rows = await client.readRows("sheet-3", "customers");
+    expect(config.channel).toBe("email");
+    expect(rows[0]?.values.name).toBe("Alice");
   });
 
   it("ensureStatusColumns는 상태 컬럼 4개를 빈 값으로 채우고, 재조회 시 반영된다", async () => {
@@ -90,6 +110,25 @@ describe("InMemorySheetClient", () => {
       _send_status: "failed",
       _message_id: "",
       _error: "invalid email",
+    });
+  });
+
+  it("writeStatus는 결측 필드(sentAt/messageId/error)를 지우지 않고 기존 값을 보존한다", async () => {
+    await client.ensureStatusColumns("sheet-1", "customers");
+    await client.writeStatus("sheet-1", "customers", [
+      { rowIndex: 2, sendStatus: "sent", sentAt: "2026-09-01T00:00:00.000Z", messageId: "msg-1" },
+    ]);
+
+    // 같은 행이 이후 실행에서 skipped_duplicate로 기록돼도 messageId/error는 명시하지 않는 흔한 케이스
+    await client.writeStatus("sheet-1", "customers", [
+      { rowIndex: 2, sendStatus: "skipped_duplicate" },
+    ]);
+
+    const rows = await client.readRows("sheet-1", "customers");
+    expect(rows[0]?.values).toMatchObject({
+      _send_status: "skipped_duplicate",
+      _sent_at: "2026-09-01T00:00:00.000Z", // 지워지지 않고 이전 발송 기록이 남아 있음
+      _message_id: "msg-1",
     });
   });
 
@@ -159,5 +198,19 @@ describe("fixtures/sheets/collections.json (SPEC §4-3 수금 안내)", () => {
     const first = rows[0];
     expect(first?.values.notes).toContain("bayaran");
     expect(config.body_template).toContain("po,");
+  });
+});
+
+describe("fixtures/sheets/large-1000.json (T7 성능 회귀 가드용, scripts/genLargeFixture.ts 생성)", () => {
+  it("loadFixtureFile로 로드되고 1000행이 스키마를 만족한다 (생성기 드리프트 감지)", async () => {
+    const fixture = loadFixtureFile(LARGE_FIXTURE_PATH);
+    const client = new InMemorySheetClient({ [fixture.sheetId]: fixture });
+
+    const rows = await client.readRows(fixture.sheetId, fixture.notifyConfig.data_tab ?? "");
+    expect(rows).toHaveLength(1000);
+    // 실발송 안전장치가 뚫려도 실제 수신자에게 닿지 않도록 RFC 2606 예약 도메인만 써야 한다
+    for (const row of rows) {
+      expect(row.values.email).toMatch(/@example\.invalid$/);
+    }
   });
 });
