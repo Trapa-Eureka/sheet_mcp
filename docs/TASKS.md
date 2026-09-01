@@ -87,6 +87,56 @@
 
 ---
 
+## npm 패키지 배포 준비 (T11~T13, `npx sheet-mcp`)
+
+- 배경: 지금은 레포를 clone해 `npx tsx src/server.ts`로 실행하는 구조(DESIGN §8). `npx sheet-mcp`처럼
+  clone 없이 바로 쓸 수 있게 하려면 빌드 산출물 + 패키지 메타데이터가 필요하다.
+- **`npm publish` 실행 자체는 이 세 태스크에 포함하지 않는다** — 공개 레지스트리에 소스가 노출되는
+  되돌리기 어려운 동작이라 별도로 명시적 승인을 받은 뒤에만 실행한다. T11~T13은 "publish만 누르면
+  되는 상태"까지 준비하는 것이 목표다.
+- 각 태스크 완료 후 다음 태스크로 넘어가기 전에 사람 확인을 받는다(세션 규칙, 자동 연속 진행 안 함).
+- 의존 그래프: `T10 → T11 → T12 → T13`
+
+### T11 — 빌드 파이프라인 · 상태: TODO · 의존: T10
+
+- 목표: `tsc` 기반으로 `src/`를 `dist/`에 순수 JS로 컴파일하는 빌드 스크립트를 추가한다. 배포판은
+  `tsx`/devDependencies 없이 `node dist/server.js`만으로 실행돼야 한다.
+- 완료 기준:
+  [ ] `tsconfig.build.json`(또는 동등한 설정)으로 `dist/`에 outDir 지정, 테스트 파일은 빌드 대상에서 제외
+  [ ] `npm run build` 스크립트 추가
+  [ ] 빌드된 `dist/server.js` 최상단에 `#!/usr/bin/env node` shebang이 있다
+  [ ] `.env` 없이 `node dist/server.js` 실행 시 기존 `tsx src/server.ts`와 동일한 fail-fast 에러가 난다(동작 동치성 확인)
+  [ ] `npm run check` 통과(기존 vitest는 여전히 `src/`를 대상으로 함 — 변경 없음)
+
+### T12 — 배포 메타데이터 + 로컬 패키지 검증 · 상태: TODO · 의존: T11
+
+- 목표: `package.json`을 npm 배포 가능한 형태로 정리하고, 실제로 tarball을 만들어 로컬에서
+  `npx`로 설치·실행되는지 검증한다.
+- 완료 기준:
+  [ ] `"private": true` 제거
+  [ ] `"bin": {"sheet-mcp": "./dist/server.js"}` 추가
+  [ ] `"files"`로 배포에 포함할 대상을 `dist/`, `.env.example` 등으로 제한(src/tests/docs 제외)
+  [ ] `"prepublishOnly"`가 `npm run check && npm run build`를 실행하도록 연결
+  [ ] `npm pack`으로 만든 tarball을 별도 임시 디렉터리에서 `npm install -g <tarball>` 또는
+  `npx <tarball 경로>`로 설치해 실제로 MCP 서버가 기동되는지 확인(자격증명 없이 fail-fast까지)
+  [ ] `npm run check` 통과
+
+### T13 — 설치 방식 문서 갱신 · 상태: TODO · 의존: T12
+
+- 목표: `npx sheet-mcp` 설치 경로를 `CLAUDE.md`/`docs/DESIGN.md` §8/`README.md`에 반영한다(가드레일
+  5: 설계 변경은 코드보다 docs를 먼저/함께 고친다). 기존 "레포 clone" 경로도 계속 유효하므로 두
+  방법 다 남긴다.
+- 완료 기준:
+  [ ] `docs/DESIGN.md` §8에 `claude mcp add sheet-mcp -- npx -y sheet-mcp` 예시 추가(기존 clone 방식과
+  나란히, 어떤 걸 언제 쓰는지 한 줄 설명 포함)
+  [ ] `README.md` 퀵스타트/실행 절차에 npx 설치 경로 반영
+  [ ] `CLAUDE.md` 스택 절에 배포 방식(빌드+npm) 한 줄 추가
+  [ ] 아직 `npm publish`를 하지 않았다는 사실과, 그 전까지는 `npx sheet-mcp`가 동작하지 않는다는
+  점을 두 문서 모두에 명확히 표시(문서가 앞서가서 안 되는 기능을 있는 것처럼 설명하지 않는다)
+  [ ] check 통과
+
+---
+
 ## v0.2 대기열 (착수 금지 — SPEC 로드맵 참조)
 
 - Semaphore 실구현 + Sender ID 등록 가이드 / 행 해시 폴백 멱등성 / 스케줄러
