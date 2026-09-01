@@ -171,6 +171,7 @@ GOOGLE_SERVICE_ACCOUNT_JSON=   # 서비스 계정 키 JSON 경로
 RESEND_API_KEY=
 MAIL_FROM=notify@example.com
 SEND_LOG_PATH=./data/sendlog.db
+SMOKE_SHEET_ID=                # npm run smoke 대상 구글시트 ID (사람 전용 수동 스모크, T3+)
 ```
 
 ## 8. Claude Code 연결

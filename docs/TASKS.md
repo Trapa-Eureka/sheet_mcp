@@ -28,7 +28,7 @@
 - 목표: SheetClient 목 구현 + `fixtures/sheets/collections.json`(SPEC §4-3, 타갈로그 혼용 값, 12행 내외) + `fixtures/sheets/large-1000.json` 생성 스크립트.
 - 완료 기준: [ ] ensureStatusColumns/writeStatus가 메모리에 반영·재조회됨 [ ] `tests/inMemorySheetClient.test.ts` [ ] check 통과
 
-### T3 (레인 A) — GoogleSheetClient 어댑터 · 상태: TODO · 의존: T2
+### T3 (레인 A) — GoogleSheetClient 어댑터 · 상태: DONE(2026-09-01) · 의존: T2
 
 - 목표: googleapis 서비스 계정 구현. 테스트는 **작성하지 않는다**(네트워크 금지) — 스모크로 검증.
 - 완료 기준: [ ] SheetClient 계약 충족(typecheck) [ ] `scripts/smoke.ts`에서 읽기 경로 사용 가능 [ ] 시크릿 하드코딩 없음 [ ] check 통과
