@@ -21,7 +21,7 @@
 - 목표: DESIGN §3 인터페이스 전체를 `src/core/types.ts`로, `notify_config` zod 파서를 `src/core/config.ts`로.
 - 완료 기준: [ ] 필수 키 결측/`channel=sms` 시 **수정 방법이 담긴** 에러 메시지 (CLAUDE.md 컨벤션) [ ] `tests/config.test.ts` — 정상 1, 오류 4케이스 이상 [ ] check 통과
 
-### T2 (레인 A) — InMemorySheetClient + 픽스처 · 상태: TODO · 의존: T1
+### T2 (레인 A) — InMemorySheetClient + 픽스처 · 상태: DONE(2026-09-01, codex 적대적 검수 반영) · 의존: T1
 - 목표: SheetClient 목 구현 + `fixtures/sheets/collections.json`(SPEC §4-3, 타갈로그 혼용 값, 12행 내외) + `fixtures/sheets/large-1000.json` 생성 스크립트.
 - 완료 기준: [ ] ensureStatusColumns/writeStatus가 메모리에 반영·재조회됨 [ ] `tests/inMemorySheetClient.test.ts` [ ] check 통과
 
