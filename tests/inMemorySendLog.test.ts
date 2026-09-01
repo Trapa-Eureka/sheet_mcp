@@ -69,7 +69,7 @@ describe("InMemorySendLog", () => {
     const log = new InMemorySendLog();
     expect(() =>
       log.commit(SHEET, TAB, "CUST-001", HASH, "no-such-token", CLAIMED_AT, "msg-1"),
-    ).toThrow(/claim되지 않았거나 token이 일치하지 않는/);
+    ).toThrow(/claim되지 않았거나 token이 일치하지 않/);
   });
 
   it("token이 일치하지 않으면 commit이 거부된다(GAP-001 — 좀비 프로세스가 남의 claim을 확정하지 못하게)", () => {
@@ -77,7 +77,7 @@ describe("InMemorySendLog", () => {
     log.claim(SHEET, TAB, "CUST-001", HASH, CLAIMED_AT);
     expect(() =>
       log.commit(SHEET, TAB, "CUST-001", HASH, "wrong-token", CLAIMED_AT, "msg-1"),
-    ).toThrow(/claim되지 않았거나 token이 일치하지 않는/);
+    ).toThrow(/claim되지 않았거나 token이 일치하지 않/);
   });
 
   it("release(올바른 token) 후에는 wasSent가 다시 false가 되고, 같은 키로 재claim할 수 있다", () => {
@@ -101,6 +101,39 @@ describe("InMemorySendLog", () => {
     const log = new InMemorySendLog();
     expect(() => log.release(SHEET, TAB, "NO-SUCH", HASH, "any-token")).not.toThrow();
   });
+
+  it(
+    "GAP-009(재검증 중 발견): token이 맞아도 이미 commit된(sent) 기록은 release()로 지워지지 " +
+      "않는다 — 확정 발송 기록이 사라져 재발송 가능해지는 사고를 막는다",
+    () => {
+      const log = new InMemorySendLog();
+      const { token } = log.claim(SHEET, TAB, "CUST-001", HASH, CLAIMED_AT);
+      log.commit(SHEET, TAB, "CUST-001", HASH, token!, CLAIMED_AT, "msg-1");
+
+      // 같은(올바른) token으로 release를 잘못 호출해도 — 이미 commit됐으므로 조용히 무시돼야 한다.
+      expect(() => log.release(SHEET, TAB, "CUST-001", HASH, token!)).not.toThrow();
+
+      expect(log.wasSent(SHEET, TAB, "CUST-001", HASH)).toBe(true);
+      expect(log.list(SHEET).entries[0]?.sendStatus).toBe("sent");
+      expect(log.list(SHEET).entries[0]?.messageId).toBe("msg-1");
+    },
+  );
+
+  it(
+    "GAP-009(재검증 중 발견): 같은 token으로 commit()을 두 번 부르면 두 번째는 에러 — " +
+      "claimed→sent 전이는 한 번만 일어나야 한다",
+    () => {
+      const log = new InMemorySendLog();
+      const { token } = log.claim(SHEET, TAB, "CUST-001", HASH, CLAIMED_AT);
+      log.commit(SHEET, TAB, "CUST-001", HASH, token!, CLAIMED_AT, "msg-1");
+
+      expect(() => log.commit(SHEET, TAB, "CUST-001", HASH, token!, CLAIMED_AT, "msg-2")).toThrow(
+        /claim되지 않았거나 token이 일치하지 않거나 이미 commit된/,
+      );
+      // 첫 commit의 결과가 그대로 유지돼야 한다(두 번째 시도로 덮어써지지 않음).
+      expect(log.list(SHEET).entries[0]?.messageId).toBe("msg-1");
+    },
+  );
 
   describe("forceReleaseStaleClaim (GAP-001 수동 복구)", () => {
     it("아직 만료 기준보다 젊은 claim은 회수하지 않는다(false 반환, 안전 쪽으로 fail)", () => {
@@ -198,6 +231,18 @@ describe("InMemorySendLog", () => {
         /cursor 값이 올바르지 않습니다/,
       );
     });
+
+    it(
+      "재검증 중 발견: limit이 0/음수여도 무제한으로 새지 않고 최소 1건으로 취급한다 " +
+        "(SQLite에서 음수 LIMIT은 '무제한'을 뜻하므로 그대로 넘기면 위험했다)",
+      () => {
+        const log = new InMemorySendLog();
+        for (let i = 0; i < 5; i += 1) commitOne(log, SHEET, `R-${String(i)}`, `t${String(i)}`);
+
+        expect(log.list(SHEET, { limit: -1 }).entries).toHaveLength(1);
+        expect(log.list(SHEET, { limit: 0 }).entries.length).toBeLessThanOrEqual(1);
+      },
+    );
   });
 
   it("templateHash가 다르면 같은 행이라도 별도 claim으로 허용한다 (템플릿 수정 후 재발송)", () => {

@@ -119,7 +119,7 @@ describe("SqliteSendLog", () => {
     try {
       expect(() =>
         log.commit(SHEET, TAB, "CUST-001", HASH, "no-such-token", CLAIMED_AT, "msg-1"),
-      ).toThrow(/claim되지 않았거나 token이 일치하지 않는/);
+      ).toThrow(/claim되지 않았거나 token이 일치하지 않/);
     } finally {
       log.close();
     }
@@ -131,7 +131,7 @@ describe("SqliteSendLog", () => {
       log.claim(SHEET, TAB, "CUST-001", HASH, CLAIMED_AT);
       expect(() =>
         log.commit(SHEET, TAB, "CUST-001", HASH, "wrong-token", CLAIMED_AT, "msg-1"),
-      ).toThrow(/claim되지 않았거나 token이 일치하지 않는/);
+      ).toThrow(/claim되지 않았거나 token이 일치하지 않/);
     } finally {
       log.close();
     }
@@ -160,6 +160,46 @@ describe("SqliteSendLog", () => {
       log.close();
     }
   });
+
+  it(
+    "GAP-009(재검증 중 발견): token이 맞아도 이미 commit된(sent) 기록은 release()로 지워지지 " +
+      "않는다 — 확정 발송 기록이 사라져 재발송 가능해지는 사고를 막는다",
+    () => {
+      const log = new SqliteSendLog(dbPath);
+      try {
+        const { token } = log.claim(SHEET, TAB, "CUST-001", HASH, CLAIMED_AT);
+        log.commit(SHEET, TAB, "CUST-001", HASH, token!, CLAIMED_AT, "msg-1");
+
+        expect(() => log.release(SHEET, TAB, "CUST-001", HASH, token!)).not.toThrow();
+
+        expect(log.wasSent(SHEET, TAB, "CUST-001", HASH)).toBe(true);
+        const { entries } = log.list(SHEET);
+        expect(entries[0]?.sendStatus).toBe("sent");
+        expect(entries[0]?.messageId).toBe("msg-1");
+      } finally {
+        log.close();
+      }
+    },
+  );
+
+  it(
+    "GAP-009(재검증 중 발견): 같은 token으로 commit()을 두 번 부르면 두 번째는 에러 — " +
+      "claimed→sent 전이는 한 번만 일어나야 한다",
+    () => {
+      const log = new SqliteSendLog(dbPath);
+      try {
+        const { token } = log.claim(SHEET, TAB, "CUST-001", HASH, CLAIMED_AT);
+        log.commit(SHEET, TAB, "CUST-001", HASH, token!, CLAIMED_AT, "msg-1");
+
+        expect(() => log.commit(SHEET, TAB, "CUST-001", HASH, token!, CLAIMED_AT, "msg-2")).toThrow(
+          /claim되지 않았거나 token이 일치하지 않거나 이미 commit된/,
+        );
+        expect(log.list(SHEET).entries[0]?.messageId).toBe("msg-1");
+      } finally {
+        log.close();
+      }
+    },
+  );
 
   describe("forceReleaseStaleClaim (GAP-001 수동 복구)", () => {
     it("아직 만료 기준보다 젊은 claim은 회수하지 않는다", () => {
@@ -288,6 +328,20 @@ describe("SqliteSendLog", () => {
         log.close();
       }
     });
+
+    it(
+      "재검증 중 발견: limit이 음수여도 SQLite의 'LIMIT -1=무제한' 의미로 새지 않고 " +
+        "최소 1건으로 취급한다",
+      () => {
+        const log = new SqliteSendLog(dbPath);
+        try {
+          for (let i = 0; i < 5; i += 1) commitOne(log, SHEET, `R-${String(i)}`, `t${String(i)}`);
+          expect(log.list(SHEET, { limit: -1 }).entries).toHaveLength(1);
+        } finally {
+          log.close();
+        }
+      },
+    );
   });
 
   it("DB를 닫고 같은 파일 경로로 다시 열어도 기록이 유지된다 (영속성)", () => {

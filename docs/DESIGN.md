@@ -170,7 +170,8 @@ export interface SendLog {
     templateHash: string,
     claimedAt: string,
   ): ClaimResult;
-  // claim()이 발급한 token과 일치할 때만 예약을 최종 발송 기록으로 확정한다. 불일치하면 에러.
+  // claim()이 발급한 token과 일치하고 **아직 commit되지 않았을 때만** 예약을 최종 발송 기록으로
+  // 확정한다(claimed→sent는 한 번만 일어나야 하는 전이). token 불일치든 이미 commit됐든 에러.
   commit(
     sheetId: string,
     tab: string,
@@ -180,7 +181,11 @@ export interface SendLog {
     sentAt: string,
     messageId: string | undefined,
   ): void;
-  // claim()이 발급한 token과 일치할 때만 예약을 해제한다(재시도 가능해짐). 불일치하면 조용히 무시.
+  // claim()이 발급한 token과 일치하고 **아직 commit되지 않았을 때만** 예약을 해제한다(재시도
+  // 가능해짐). token이 불일치하거나 이미 commit(확정)된 기록이면 조용히 무시한다 — 확정된
+  // 기록은 release()로도 절대 지워지지 않는다(재검증 중 발견·강화됨: 이 committed 체크가
+  // 없으면 commit 성공 후 release가 잘못 불렸을 때 방금 확정한 발송 기록이 통째로 사라져
+  // wasSent()가 false가 되고 재발송이 가능해지는 위험이 있었다).
   release(sheetId: string, tab: string, rowKey: string, templateHash: string, token: string): void;
   // claim된 지 olderThanMs 이상이고 아직 commit 안 된 claim만 강제로 회수한다(token 불필요 — 사람이
   // 직접 검토 후 호출). 조건에 안 맞으면 아무 것도 안 하고 false.

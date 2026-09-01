@@ -84,12 +84,16 @@ export class InMemorySendLog implements SendLog {
     messageId: string | undefined,
   ): void {
     const record = this.records.get(uniqueKey(sheetId, tab, rowKey, templateHash));
-    if (!record || record.token !== token) {
+    // token이 일치해도 이미 committed된 기록은 다시 commit할 수 없다 — claimed→sent는 한 번만
+    // 일어나야 하는 전이다. 두 번째 commit() 호출은 호출자 버그이므로 조용히 덮어쓰지 않고
+    // 똑같이 에러로 알린다(release()의 이중 호출 보호와 대칭 — 아래 참고, 재검증 과정에서
+    // 발견된 방어 강화).
+    if (!record || record.token !== token || record.committed) {
       throw new Error(
-        `SendLog.commit: claim되지 않았거나 token이 일치하지 않는 (sheetId='${sheetId}', tab='${tab}', ` +
-          `rowKey='${rowKey}', templateHash='${templateHash}')을 commit하려 했습니다. claim() 없이 ` +
-          "commit()을 호출했거나, 그 사이 forceReleaseStaleClaim()으로 회수되고 다른 claim으로 " +
-          "대체됐을 수 있습니다.",
+        `SendLog.commit: claim되지 않았거나 token이 일치하지 않거나 이미 commit된 ` +
+          `(sheetId='${sheetId}', tab='${tab}', rowKey='${rowKey}', templateHash='${templateHash}')을 ` +
+          "commit하려 했습니다. claim() 없이 commit()을 호출했거나, 같은 claim을 두 번 commit " +
+          "했거나, 그 사이 forceReleaseStaleClaim()으로 회수되고 다른 claim으로 대체됐을 수 있습니다.",
       );
     }
     record.committed = true;
@@ -100,9 +104,14 @@ export class InMemorySendLog implements SendLog {
   release(sheetId: string, tab: string, rowKey: string, templateHash: string, token: string): void {
     const key = uniqueKey(sheetId, tab, rowKey, templateHash);
     const record = this.records.get(key);
-    // token이 일치할 때만 지운다 — 이미 없거나 다른 claim으로 대체됐다면 이 호출자의 소유가
-    // 아니므로 조용히 무시한다(GAP-001).
-    if (record && record.token === token) {
+    // token이 일치하고 **아직 committed되지 않았을 때만** 지운다. 이미 없거나, 다른 claim으로
+    // 대체됐거나, token은 맞지만 이미 commit(확정 발송)된 기록이면 조용히 무시한다 — 확정된
+    // 기록은 release()로도 절대 지워지면 안 된다(재검증 과정에서 발견: 예전엔 이 committed
+    // 체크가 없어서, 정상 흐름에서는 안 일어나지만 commit 성공 후 release가 잘못 불리면
+    // 방금 확정한 발송 기록이 통째로 사라져 wasSent()가 false가 되고 재발송이 가능해지는
+    // 위험이 있었다 — forceReleaseStaleClaim()이 committed 기록을 절대 건드리지 않는 것과
+    // 같은 원칙을 release()에도 동일하게 적용한다).
+    if (record && record.token === token && !record.committed) {
       this.records.delete(key);
     }
   }
@@ -128,7 +137,14 @@ export class InMemorySendLog implements SendLog {
   }
 
   list(sheetId: string, options: SendLogListOptions = {}): SendLogListResult {
-    const limit = Math.min(options.limit ?? DEFAULT_SEND_LOG_LIST_LIMIT, MAX_SEND_LOG_LIST_LIMIT);
+    // MCP 경계(sendLogLimitSchema)는 이미 양의 정수만 허용하지만, SendLog는 그 zod 검증 없이도
+    // 직접 호출될 수 있는 인터페이스이므로 0/음수가 들어와도 항상 최소 1건 이상을 요청한 것으로
+    // 취급한다(재검증 중 강화 — 음수 limit이 SQLite의 "LIMIT -1=무제한" 의미와 우연히 겹쳐
+    // AR-015가 막으려던 무제한 응답을 다시 열어줄 수 있었다).
+    const limit = Math.max(
+      1,
+      Math.min(options.limit ?? DEFAULT_SEND_LOG_LIST_LIMIT, MAX_SEND_LOG_LIST_LIMIT),
+    );
     const cursorId = parseCursor(options.cursor);
 
     const matched = [...this.records.values()]
