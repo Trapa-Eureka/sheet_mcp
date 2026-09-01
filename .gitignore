@@ -1,2 +1,13 @@
 ._*
 .DS_Store
+
+# secrets
+.env
+
+# local send log db
+data/
+
+# deps / build / coverage
+node_modules/
+dist/
+coverage/
