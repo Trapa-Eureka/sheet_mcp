@@ -50,10 +50,10 @@
 - 목표: `InMemorySendLog` + `SqliteSendLog`(better-sqlite3, unique 키는 DESIGN §6).
 - 완료 기준: [ ] 임시 파일 DB로 wasSent/record/list 테스트 (파일 IO는 허용, 네트워크 아님) [ ] unique 충돌 시 조용히 무시 아님—명시 처리 [ ] check 통과
 
-### T7 — SendPipeline · 상태: TODO · 의존: T2, T4, T5, T6
+### T7 — SendPipeline · 상태: DONE(2026-09-01) · 의존: T2, T4, T5, T6
 
 - 목표: DESIGN §4의 8단계 흐름 구현.
-- 완료 기준: [ ] **TESTING §4 체크리스트 12항목 전부** `tests/pipeline.test.ts`로 통과 [ ] check 통과
+- 완료 기준: [x] **TESTING §4 체크리스트 12항목 전부** `tests/pipeline.test.ts`로 통과 [x] check 통과
 
 ### T8 — MCP 서버 · 상태: TODO · 의존: T7
 
