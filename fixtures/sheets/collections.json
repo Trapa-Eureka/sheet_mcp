@@ -1,0 +1,137 @@
+{
+  "sheetId": "collections",
+  "notifyConfig": {
+    "data_tab": "customers",
+    "id_column": "customer_id",
+    "recipient_column": "email",
+    "channel": "email",
+    "subject_template": "[{{shop}}] Paalala sa Bayarin / Payment Reminder",
+    "body_template": "{{name}} po, ang inyong balance na {{amount}} ay dapat bayaran bago ang {{due}}. Salamat po!",
+    "filter_column": "status",
+    "filter_value": "unpaid"
+  },
+  "tabs": {
+    "customers": [
+      {
+        "customer_id": "CUST-001",
+        "name": "Juan Dela Cruz",
+        "email": "juan.delacruz@example.invalid",
+        "amount": "₱1,200.00",
+        "due": "2026-09-15",
+        "status": "unpaid",
+        "shop": "ABC Trading",
+        "notes": "Paalala: bayaran bago ang due date."
+      },
+      {
+        "customer_id": "CUST-002",
+        "name": "Maria Santos",
+        "email": "maria.santos@example.invalid",
+        "amount": "₱850.50",
+        "due": "2026-09-10",
+        "status": "unpaid",
+        "shop": "Cebu Hardware",
+        "notes": "Follow up next week kung hindi pa nabayaran."
+      },
+      {
+        "customer_id": "CUST-003",
+        "name": "Ramon Reyes",
+        "email": "ramon.reyes@example.invalid",
+        "amount": "₱300.00",
+        "due": "2026-09-20",
+        "status": "paid",
+        "shop": "ABC Trading",
+        "notes": "Fully paid, salamat po!"
+      },
+      {
+        "customer_id": "CUST-004",
+        "name": "Liza Bautista",
+        "email": "liza.bautista@example.invalid",
+        "amount": "₱4,500.75",
+        "due": "2026-09-05",
+        "status": "unpaid",
+        "shop": "Davao Supplies",
+        "notes": "Konting extension po, babayaran sa Lunes."
+      },
+      {
+        "customer_id": "CUST-005",
+        "name": "Mark Villanueva",
+        "email": "mark.villanueva@example.invalid",
+        "amount": "₱0.00",
+        "due": "2026-09-25",
+        "status": "paid",
+        "shop": "Cebu Hardware",
+        "notes": "Wala pang balance, cleared na."
+      },
+      {
+        "customer_id": "CUST-006",
+        "name": "Grace Fernandez",
+        "email": "grace.fernandez@example.invalid",
+        "amount": "₱2,200.00",
+        "due": "2026-09-12",
+        "status": "unpaid",
+        "shop": "ABC Trading",
+        "notes": "Please settle ASAP, malapit na ang deadline."
+      },
+      {
+        "customer_id": "CUST-007",
+        "name": "Noel Aquino",
+        "email": "noel.aquino@example.invalid",
+        "amount": "₱175.25",
+        "due": "2026-09-18",
+        "status": "unpaid",
+        "shop": "Davao Supplies",
+        "notes": "Utang pa rin, need reminder."
+      },
+      {
+        "customer_id": "CUST-008",
+        "name": "Carmela Torres",
+        "email": "carmela.torres@example.invalid",
+        "amount": "₱990.00",
+        "due": "2026-09-08",
+        "status": "unpaid",
+        "shop": "Cebu Hardware",
+        "notes": "Second notice, harap na ang due date."
+      },
+      {
+        "customer_id": "CUST-009",
+        "name": "Danilo Cruz",
+        "email": "danilo.cruz@example.invalid",
+        "amount": "₱60.00",
+        "due": "2026-09-22",
+        "status": "paid",
+        "shop": "ABC Trading",
+        "notes": "Bayad na, thank you!"
+      },
+      {
+        "customer_id": "CUST-010",
+        "name": "Rosario Mendoza",
+        "email": "rosario.mendoza@example.invalid",
+        "amount": "₱3,300.00",
+        "due": "2026-09-14",
+        "status": "unpaid",
+        "shop": "Davao Supplies",
+        "notes": "Malaking balance, kailangan ng follow-up call."
+      },
+      {
+        "customer_id": "CUST-011",
+        "name": "Paolo Ramos",
+        "email": "paolo.ramos@example.invalid",
+        "amount": "₱725.00",
+        "due": "2026-09-16",
+        "status": "unpaid",
+        "shop": "ABC Trading",
+        "notes": "Ok lang, babayaran within the week."
+      },
+      {
+        "customer_id": "CUST-012",
+        "name": "Elena Garcia",
+        "email": "elena.garcia@example.invalid",
+        "amount": "₱150.00",
+        "due": "2026-09-11",
+        "status": "unpaid",
+        "shop": "Cebu Hardware",
+        "notes": "Konting balance na lang, aabot din."
+      }
+    ]
+  }
+}

@@ -10,17 +10,23 @@
 - 이메일: Resend API (참조 어댑터) / SMTP(Nodemailer)는 대체 어댑터
 - 발송 로그: `better-sqlite3` (로컬 파일 DB)
 - 검증: Vitest + ESLint + Prettier, 스키마는 `zod`
+- `.env` 로딩: `dotenv` — `main()` 진입점(서버/스모크)에서만 호출, 테스트 경로에는 영향 없음
+- 배포: `npm run build`(tsc)로 `dist/`에 컴파일해 `npx sheet-mcp`로 clone 없이 설치하는 경로를 준비 중 (`docs/DESIGN.md` §8-B, `npm publish`는 아직 미실행 — `docs/TASKS.md` T11~T13)
 
 ## 명령어
 
 ```bash
-npm run check       # typecheck + lint + test 일괄 — 태스크 완료의 필수 게이트
-npm run test        # vitest run
-npm run test:watch  # vitest watch
-npm run typecheck   # tsc --noEmit
-npm run lint        # eslint .
-npm run dev         # MCP 서버 stdio 실행
-npm run smoke       # 실제 시트/이메일 수동 스모크 (사람 전용, docs/TESTING.md 참조)
+npm run check        # typecheck + lint + format:check + test 일괄 — 태스크 완료의 필수 게이트
+npm run test         # vitest run
+npm run test:watch   # vitest watch
+npm run test:coverage # vitest run --coverage (core/ 라인 커버리지 리포트, docs/TESTING.md §6)
+npm run typecheck    # tsc --noEmit
+npm run lint         # eslint .
+npm run format       # prettier --write . (docs/ADVERSARIAL_REVIEW_*.md는 감사 기록이라 .prettierignore로 제외)
+npm run format:check # prettier --check .
+npm run dev          # MCP 서버 stdio 실행
+npm run smoke        # 실제 시트/이메일 수동 스모크 (사람 전용, docs/TESTING.md 참조)
+npm run build        # src/ -> dist/ 배포용 컴파일 (npm publish 전 단계, docs/DESIGN.md §8-B)
 ```
 
 ## 소스 레이아웃
@@ -72,3 +78,4 @@ scripts/       # smoke.ts 등 사람 전용 스크립트
 
 - 2026-09-01: 최초 작성.
 - 2026-09-01: '컨텍스트 관리' 섹션 추가.
+- 2026-09-01: npm 배포(T11~T13) 진행 중 — 스택/명령어 절에 build 반영.

@@ -1,0 +1,12 @@
+// npm 패키지 배포용 빌드 전용 설정(T11, docs/TASKS.md). 개발/테스트는 여전히 tsx/vitest가 tsconfig.json을
+// 그대로 쓴다 — 이 파일은 `npm run build`에서만 쓰이고, `src/`만 `dist/`로 컴파일한다(tests/scripts는
+// 배포판에 포함하지 않는다).
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src"]
+}

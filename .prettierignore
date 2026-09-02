@@ -1,0 +1,7 @@
+dist
+node_modules
+data
+coverage
+
+# 적대적 검수 리포트는 당시 상태의 감사 기록 — 원문 그대로 보존한다 (docs/ADVERSARIAL_REVIEW_001.md §6)
+docs/ADVERSARIAL_REVIEW_*.md

@@ -11,12 +11,12 @@
 
 ## 2. 목(mock) 구성 — src/mocks/
 
-| 목 | 역할 |
-|---|---|
-| `InMemorySheetClient` | `fixtures/sheets/*.json`을 로드해 SheetClient 구현. `writeStatus` 결과를 메모리에 반영해 재조회 검증 가능 |
-| `MockNotificationProvider` | 보낸 메시지를 배열에 기록. `failFor: rowKey[]` 옵션으로 특정 행 실패 주입 |
-| `InMemorySendLog` | SendLog 인메모리 구현 (SQLite 어댑터는 별도 단위 테스트) |
-| `FixedClock` | `now()`가 고정 시각 반환 |
+| 목                         | 역할                                                                                                      |
+| -------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `InMemorySheetClient`      | `fixtures/sheets/*.json`을 로드해 SheetClient 구현. `writeStatus` 결과를 메모리에 반영해 재조회 검증 가능 |
+| `MockNotificationProvider` | 보낸 메시지를 배열에 기록. `failFor: rowKey[]` 옵션으로 특정 행 실패 주입                                 |
+| `InMemorySendLog`          | SendLog 인메모리 구현 (SQLite 어댑터는 별도 단위 테스트)                                                  |
+| `FixedClock`               | `now()`가 고정 시각 반환                                                                                  |
 
 픽스처 예: `fixtures/sheets/collections.json` — 미수금 시나리오(SPEC §4-3), 타갈로그/영어 혼용 값 포함.
 
@@ -48,7 +48,7 @@
 const provider = new MockNotificationProvider({ failFor: ["CUST-003"] });
 const result = await pipeline.run("sheet-1", { dryRun: false });
 expect(result.failed).toBe(1);
-expect(provider.sent.map(m => m.rowKey)).not.toContain("CUST-003");
+expect(provider.sent.map((m) => m.rowKey)).not.toContain("CUST-003");
 ```
 
 ## 6. 커버리지
