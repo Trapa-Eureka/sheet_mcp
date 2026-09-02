@@ -1,12 +1,32 @@
 {
   "name": "sheet-mcp",
   "version": "0.1.0",
+  "description": "구글시트를 DB로 쓰는 필리핀 SME용 알림 발송 MCP 서버 (v0.1: 이메일, v0.2: SMS 예정)",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "google-sheets",
+    "email",
+    "notifications",
+    "claude"
+  ],
+  "license": "MIT",
+  "author": "Trapa-Eureka",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Trapa-Eureka/sheet_mcp.git"
+  },
+  "homepage": "https://github.com/Trapa-Eureka/sheet_mcp#readme",
+  "bugs": {
+    "url": "https://github.com/Trapa-Eureka/sheet_mcp/issues"
+  },
   "type": "module",
   "engines": {
     "node": ">=20"
   },
   "bin": {
-    "sheet-mcp": "./dist/server.js"
+    "sheet-mcp": "dist/server.js",
+    "sheet-mcp-recover": "dist/cli/recoverStaleClaim.js"
   },
   "files": [
     "dist",
@@ -23,7 +43,7 @@
     "format:check": "prettier --check .",
     "dev": "tsx src/server.ts",
     "smoke": "tsx scripts/smoke.ts",
-    "recover:stale-claim": "tsx scripts/recoverStaleClaim.ts",
+    "recover:stale-claim": "tsx src/cli/recoverStaleClaim.ts",
     "build": "tsc -p tsconfig.build.json && node scripts/postbuild.mjs",
     "prepack": "npm run build",
     "prepublishOnly": "npm run check && npm run build"

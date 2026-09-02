@@ -17,6 +17,39 @@ import type { SheetClient, SheetRow, StatusUpdate } from "../core/types.js";
 const STATUS_COLUMNS = ["_send_status", "_sent_at", "_message_id", "_error"] as const;
 const SCOPES = ["https://www.googleapis.com/auth/spreadsheets"];
 
+/** Sheets API 호출 기본 timeout(ms) — docs/ADVERSARIAL_REVIEW_004.md AR-023: 네트워크 half-open/DNS
+ * 지연 등으로 응답이 영영 안 오면 이 값 없이는 파이프라인 전체가(claim 포함) 무기한 멈춰 있을 수
+ * 있었다. 실제 in-flight 요청을 취소하지는 못한다(SheetsApiLike는 이 어댑터가 정의한 좁은
+ * 인터페이스라 AbortController를 전달할 표준 방법이 없음) — 대신 이 시간이 지나면 결과를 더 이상
+ * 기다리지 않고 명확한 에러로 실패 처리한다(readConfig/readRows/ensureStatusColumns/writeStatus
+ * 어느 쪽이 걸려도 호출 자체가 무기한 대기하지 않게 하는 것이 목적). */
+const DEFAULT_GOOGLE_SHEETS_TIMEOUT_MS = 30_000;
+
+/** Promise가 timeoutMs 안에 끝나지 않으면 명확한 에러로 대신 reject한다. 원본 promise 자체를
+ * 취소하지는 않는다(위 상수 설명 참고) — 호출자가 그 결과를 더 이상 기다리지 않을 뿐이다. */
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, what: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(
+        new Error(
+          `${what}이(가) ${String(timeoutMs)}ms 안에 응답하지 않아 타임아웃 처리했습니다. ` +
+            "네트워크 상태나 Google API 장애 여부를 확인한 뒤 다시 시도하세요.",
+        ),
+      );
+    }, timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err: unknown) => {
+        clearTimeout(timer);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      },
+    );
+  });
+}
+
 /** google-auth-library JWTInput의 필수 사용 필드만 검증한다. 나머지 키는 그대로 흘려보낸다(passthrough) */
 const serviceAccountKeySchema = z
   .object({
@@ -59,6 +92,9 @@ export interface GoogleSheetClientOptions {
   serviceAccountKeyPath?: string;
   /** 테스트 전용: 실제 인증 없이 Sheets API 호출부를 직접 주입한다 (AR-008) */
   sheetsApi?: SheetsApiLike;
+  /** Sheets API 호출당 timeout(ms). 기본값 DEFAULT_GOOGLE_SHEETS_TIMEOUT_MS(30초). 테스트에서
+   * "응답이 영영 안 오는" 상황을 짧은 시간 안에 검증하려고 주입 가능하게 열어 둔다(AR-023). */
+  timeoutMs?: number;
 }
 
 /** Sheets API 셀 값은 string/number/boolean이 보통이지만 타입이 any라 안전하게 문자열화한다 */
@@ -92,8 +128,11 @@ function quoteSheetName(tab: string): string {
 export class GoogleSheetClient implements SheetClient {
   private readonly keyPath: string | undefined;
   private sheetsApi: SheetsApiLike | null;
+  private readonly timeoutMs: number;
 
   constructor(options: GoogleSheetClientOptions = {}) {
+    this.timeoutMs = options.timeoutMs ?? DEFAULT_GOOGLE_SHEETS_TIMEOUT_MS;
+
     if (options.sheetsApi) {
       this.sheetsApi = options.sheetsApi;
       this.keyPath = undefined;
@@ -157,10 +196,14 @@ export class GoogleSheetClient implements SheetClient {
 
   async readConfig(sheetId: string): Promise<Record<string, string>> {
     const sheets = this.getSheetsApi();
-    const res = await sheets.spreadsheets.values.get({
-      spreadsheetId: sheetId,
-      range: `${quoteSheetName("notify_config")}!A:B`,
-    });
+    const res = await withTimeout(
+      sheets.spreadsheets.values.get({
+        spreadsheetId: sheetId,
+        range: `${quoteSheetName("notify_config")}!A:B`,
+      }),
+      this.timeoutMs,
+      "notify_config 읽기(Sheets API)",
+    );
 
     const config: Record<string, string> = {};
     const rows: unknown[][] = res.data.values ?? [];
@@ -176,10 +219,14 @@ export class GoogleSheetClient implements SheetClient {
 
   async readRows(sheetId: string, tab: string): Promise<SheetRow[]> {
     const sheets = this.getSheetsApi();
-    const res = await sheets.spreadsheets.values.get({
-      spreadsheetId: sheetId,
-      range: quoteSheetName(tab),
-    });
+    const res = await withTimeout(
+      sheets.spreadsheets.values.get({
+        spreadsheetId: sheetId,
+        range: quoteSheetName(tab),
+      }),
+      this.timeoutMs,
+      `'${tab}' 탭 읽기(Sheets API)`,
+    );
 
     const values: unknown[][] = res.data.values ?? [];
     const header = values[0] ?? [];
@@ -196,10 +243,14 @@ export class GoogleSheetClient implements SheetClient {
   }
 
   private async readHeader(sheets: SheetsApiLike, sheetId: string, tab: string): Promise<string[]> {
-    const res = await sheets.spreadsheets.values.get({
-      spreadsheetId: sheetId,
-      range: `${quoteSheetName(tab)}!1:1`,
-    });
+    const res = await withTimeout(
+      sheets.spreadsheets.values.get({
+        spreadsheetId: sheetId,
+        range: `${quoteSheetName(tab)}!1:1`,
+      }),
+      this.timeoutMs,
+      `'${tab}' 탭 헤더 읽기(Sheets API)`,
+    );
     const headerRow: unknown[] = res.data.values?.[0] ?? [];
     return headerRow.map((cell) => cellToString(cell));
   }
@@ -211,12 +262,16 @@ export class GoogleSheetClient implements SheetClient {
     if (missing.length === 0) return;
 
     const startColumnLetter = columnIndexToLetter(header.length);
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: sheetId,
-      range: `${quoteSheetName(tab)}!${startColumnLetter}1`,
-      valueInputOption: "RAW",
-      requestBody: { values: [missing] },
-    });
+    await withTimeout(
+      sheets.spreadsheets.values.update({
+        spreadsheetId: sheetId,
+        range: `${quoteSheetName(tab)}!${startColumnLetter}1`,
+        valueInputOption: "RAW",
+        requestBody: { values: [missing] },
+      }),
+      this.timeoutMs,
+      "상태 컬럼 헤더 기록(Sheets API)",
+    );
   }
 
   async writeStatus(sheetId: string, tab: string, updates: StatusUpdate[]): Promise<void> {
@@ -271,9 +326,13 @@ export class GoogleSheetClient implements SheetClient {
       pushOptionalCell(columnLetters._error, update.rowIndex, update.error);
     }
 
-    await sheets.spreadsheets.values.batchUpdate({
-      spreadsheetId: sheetId,
-      requestBody: { valueInputOption: "RAW", data },
-    });
+    await withTimeout(
+      sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: sheetId,
+        requestBody: { valueInputOption: "RAW", data },
+      }),
+      this.timeoutMs,
+      "발송 상태 write-back(Sheets API)",
+    );
   }
 }

@@ -165,6 +165,15 @@
   프루닝 로그 항목을 추가했다. T11~T13 전체가 아직 `npm publish` 실행 전 준비 단계이므로, 실제
   퍼블리시는 이후 별도로 사용자 승인을 받아 진행한다.
 
+### T13 후속 — 적대적 검수 004(publish 최종 검수) 반영 · 상태: CODE DONE(2026-09-02) / MANUAL SMOKE PENDING
+
+- `docs/ADVERSARIAL_REVIEW_004.md`(AR-019~~027, `be2b38f` 기준)가 "현재 리비전을 publish해서는 안
+  된다"고 판정했다. 배포 차단 3건(AR-019~~021)과 운영 안정성 2건(AR-022~~023), 품질 개선 3건
+  (AR-025~~027)을 코드로 전부 해소했다 — 상세 내역·검증 증거는 `docs/ADVERSARIAL_REVIEW_004_RESOLUTION.md`.
+- **AR-024(실제 Google Sheet+Resend 수동 스모크)만 남아 있다** — 이는 T10의 기존
+  `MANUAL SMOKE PENDING` 항목과 동일한 사람 전용 실행 항목이며, 코드 변경으로 해소할 수 없다.
+  실제 스모크를 수행해 T10과 함께 DONE으로 승격하기 전까지 `npm publish`는 여전히 보류한다.
+
 ---
 
 ## v0.2 대기열 (착수 금지 — SPEC 로드맵 참조)

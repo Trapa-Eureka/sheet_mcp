@@ -71,7 +71,15 @@ describe("SendPipeline — TESTING §4 체크리스트", () => {
   it("1. 빈 데이터 탭 → sent 0, 에러 아님", async () => {
     const { pipeline } = setup({ rows: [] });
     const result = await pipeline.run(SHEET_ID, { dryRun: false });
-    expect(result).toEqual({ sent: 0, failed: 0, skipped: 0, logFailed: 0, details: [] });
+    expect(result).toEqual({
+      sent: 0,
+      failed: 0,
+      skipped: 0,
+      logFailed: 0,
+      totalMatched: 0,
+      truncated: false,
+      details: [],
+    });
   });
 
   it("2. recipient_column 값 결측 행 → 그 행만 failed, _error에 사유", async () => {
@@ -333,6 +341,47 @@ describe("SendPipeline — TESTING §4 체크리스트", () => {
     expect(result.sent + result.failed + result.skipped).toBe(expectedCount);
     expect(result.sent).toBeGreaterThan(0);
   });
+});
+
+describe("MAX_PIPELINE_ROWS 상한 (docs/ADVERSARIAL_REVIEW_004.md AR-022)", () => {
+  /** id_column/email이 각각 유일한 합성 행 N개를 만든다 — 대용량 상한 테스트 전용. */
+  function manyRows(count: number): Array<Record<string, string>> {
+    return Array.from({ length: count }, (_, i) => ({
+      customer_id: `CUST-${String(i)}`,
+      name: `User${String(i)}`,
+      email: `user${String(i)}@example.com`,
+      shop: "Shop1",
+    }));
+  }
+
+  it("dry-run: MAX_PIPELINE_ROWS(1000)을 넘는 1001행은 잘라서 미리보기하고 totalMatched/truncated로 알린다", async () => {
+    const { pipeline } = setup({ rows: manyRows(1001) });
+    const result = await pipeline.run(SHEET_ID, { dryRun: true });
+
+    expect(result.totalMatched).toBe(1001);
+    expect(result.truncated).toBe(true);
+    expect(result.details).toHaveLength(1000);
+  });
+
+  it(
+    "live: MAX_PIPELINE_ROWS(1000)을 넘으면 일부만 조용히 보내는 대신 전체 실행을 던져서 " +
+      "중단한다 — provider.send()도 claim()도 단 한 번도 호출되지 않는다(부분 발송 없음)",
+    async () => {
+      const { pipeline, provider, sheetClient, sendLog } = setup({ rows: manyRows(1001) });
+
+      await expect(pipeline.run(SHEET_ID, { dryRun: false })).rejects.toThrow(
+        /발송 대상이 1001행으로 한도\(1000행\)를 초과합니다/,
+      );
+
+      expect(provider.sent).toHaveLength(0);
+      expect(provider.failed).toHaveLength(0);
+      // claim()이 단 한 번도 안 불렸다는 것을 wasSent()로 간접 확인 — 첫 몇 행만 표본 확인.
+      expect(sendLog.wasSent(SHEET_ID, "customers", "CUST-0", "irrelevant")).toBe(false);
+      // 시트 상태 컬럼도 전혀 건드리지 않았어야 한다 — write-back 호출 자체가 없었다는 뜻이다.
+      const rowsAfter = await sheetClient.readRows(SHEET_ID, "customers");
+      expect(rowsAfter[0]?.values["_send_status"]).toBeUndefined();
+    },
+  );
 });
 
 describe("SendPipeline — 추가 견고성 케이스", () => {

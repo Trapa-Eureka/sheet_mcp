@@ -1,9 +1,17 @@
-// 사람 전용 운영 스크립트 — stale claim(commit도 release도 안 된 채 남아 있는 예약)을
-// 조회하고, 명시적 확인을 거쳐서만 강제로 회수한다.
+// 사람 전용 운영 CLI — stale claim(commit도 release도 안 된 채 남아 있는 예약)을 조회하고,
+// 명시적 확인을 거쳐서만 강제로 회수한다.
 // docs/ADVERSARIAL_REVIEW_003_STATUS_GAPS.md STATUS-GAP-003 대응.
-// CI/에이전트 게이트(npm run check)에 포함하지 않는다 — smoke.ts와 같은 성격의 사람 전용 도구.
 //
-// 이 스크립트가 절대 하지 않는 것:
+// scripts/smoke.ts와 달리 이 파일은 npm 패키지로 공개 배포되는 두 번째 bin이다
+// (`sheet-mcp-recover`, package.json). smoke.ts는 실제 시트/이메일 자격증명이 있어야만 의미가
+// 있어 저장소를 clone한 개발자만 쓰지만, stale claim 복구는 `npx sheet-mcp`로 설치한 운영자도
+// 똑같이 필요하다 — 그래서 src/adapters와 같은 상대 경로로 컴파일돼 dist/에 함께 실려야 하는
+// src/cli/에 둔다(docs/ADVERSARIAL_REVIEW_004.md AR-019: 예전엔 scripts/에 있어서 공개 tarball에
+// 아예 포함되지 않았고, README가 공식 절차로 안내하는데도 npx로 설치한 사람은 실행할 방법이 없었다).
+// CI/에이전트 게이트(npm run check)에는 포함하지 않는다 — 로직은 core/adapters 테스트로 이미
+// 커버되고, 이 파일 자체는 CLI 파싱/조립만 한다.
+//
+// 이 CLI가 절대 하지 않는 것:
 // - 자동 판단으로 claim을 회수하지 않는다. --confirm 없이는 조회만 하고 아무 것도 지우지 않는다
 //   (기본 실행은 DB를 readonly로 연다 — 코드 버그가 있어도 SQLite 자체가 쓰기를 거부한다).
 // - 이미 commit(확정 발송)된 기록은 어떤 옵션으로도 지우지 않는다 — forceReleaseStaleClaim() 자체가
@@ -11,13 +19,18 @@
 // - 실제로 이메일을 재발송하지 않는다. claim을 회수해도 그 자체로는 아무 것도 발송되지 않는다 —
 //   회수 후 재시도하려면 별도로 파이프라인(발송 도구)을 다시 실행해야 한다.
 //
-// 사용법:
-//   npx tsx scripts/recoverStaleClaim.ts \
+// 사용법(레포 clone, 개발용):
+//   npm run recover:stale-claim -- \
+//     --db ./data/sendlog.db --sheet-id <sheetId> --tab <tab> \
+//     --row-key <rowKey> --template-hash <templateHash>
+//
+// 사용법(npx sheet-mcp 설치, publish 이후):
+//   npx sheet-mcp-recover \
 //     --db ./data/sendlog.db --sheet-id <sheetId> --tab <tab> \
 //     --row-key <rowKey> --template-hash <templateHash>
 //   (여기까지만 실행하면 조회만 한다. 아무 것도 바뀌지 않는다.)
 //
-//   npx tsx scripts/recoverStaleClaim.ts \
+//   npx sheet-mcp-recover \
 //     --db ./data/sendlog.db --sheet-id <sheetId> --tab <tab> \
 //     --row-key <rowKey> --template-hash <templateHash> \
 //     --older-than-ms 1800000 --reason "provider 대시보드에서 미발송 확인함" --confirm
@@ -36,8 +49,8 @@
 import Database from "better-sqlite3";
 import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { detectSchemaVersion, SqliteSendLog } from "../src/adapters/sqliteSendLog.js";
-import { assertValidStaleClaimThreshold } from "../src/core/types.js";
+import { detectSchemaVersion, SqliteSendLog } from "../adapters/sqliteSendLog.js";
+import { assertValidStaleClaimThreshold } from "../core/types.js";
 
 const DEFAULT_OLDER_THAN_MS = 30 * 60 * 1000; // 30분
 // 운영 정책상 보수적 최소값(STATUS-GAP-002) — 이보다 짧은 값은 발송이 아직 진행 중인 claim을
@@ -58,12 +71,14 @@ interface Args {
 
 function printUsage(): void {
   console.error(`사용법:
-  npx tsx scripts/recoverStaleClaim.ts --db <path> --sheet-id <id> --tab <tab> \\
+  npx sheet-mcp-recover --db <path> --sheet-id <id> --tab <tab> \\
     --row-key <rowKey> --template-hash <hash> \\
     [--older-than-ms 1800000] [--reason "..."] [--confirm] [--i-understand-the-risk]
 
+(레포를 clone해 개발 중이라면 npx 대신 npm run recover:stale-claim --)
+
 --confirm 없이 실행하면 조회만 하고 아무 것도 지우지 않습니다.
-자세한 안내는 scripts/recoverStaleClaim.ts 상단 주석을 참고하세요.`);
+자세한 안내는 src/cli/recoverStaleClaim.ts 상단 주석을 참고하세요.`);
 }
 
 function fail(message: string): never {
@@ -164,9 +179,9 @@ function printInspectResult(result: InspectResult): void {
   }
   if (result.version === "v1_record") {
     console.log(
-      "이 DB는 아직 이전(v1) 스키마입니다. 서버(또는 이 스크립트의 --confirm 실행)를 한 번 " +
-        "기동하면 자동으로 새 스키마(v2)로 마이그레이션됩니다(기존 'sent' 기록은 보존, 원본은 " +
-        "백업 테이블로 남음 — STATUS-GAP-001). 마이그레이션 후 다시 조회하세요.",
+      "이 DB는 아직 이전(v1) 스키마입니다. 서버(또는 이 CLI의 --confirm 실행)를 한 번 기동하면 " +
+        "자동으로 새 스키마(v2)로 마이그레이션됩니다(기존 'sent' 기록은 보존, 원본은 백업 " +
+        "테이블로 남음 — STATUS-GAP-001). 마이그레이션 후 다시 조회하세요.",
     );
     return;
   }

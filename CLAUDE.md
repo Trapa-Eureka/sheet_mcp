@@ -36,10 +36,11 @@ src/
   core/        # 순수 로직: config, template, pipeline, idempotency — 외부 IO 없음
   adapters/    # 외부 IO 구현: googleSheetClient, resendProvider, sqliteSendLog
   mocks/       # InMemorySheetClient, MockNotificationProvider, FixedClock
+  cli/         # npm 패키지로 공개 배포되는 사람 전용 운영 CLI (recoverStaleClaim 등) — bin으로 노출됨
   server.ts    # MCP 서버 진입점 (도구 등록만, 로직 없음)
 tests/         # Vitest — src/mocks만 사용, 네트워크 금지
 fixtures/      # 시트 JSON 픽스처
-scripts/       # smoke.ts 등 사람 전용 스크립트
+scripts/       # smoke.ts 등 저장소 개발자 전용 스크립트 (실자격증명 필요, 배포판에 포함 안 됨)
 ```
 
 ## 컨벤션
