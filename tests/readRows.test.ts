@@ -1,4 +1,5 @@
-// read_rows MCP 도구 지원 로직(core/readRows.ts) 테스트. InMemorySheetClient만 사용, 네트워크 없음.
+// Tests for the logic backing the read_rows MCP tool (core/readRows.ts). Uses only
+// InMemorySheetClient, no network.
 
 import { describe, expect, it } from "vitest";
 import { readTargetRows, READ_ROWS_PREVIEW_LIMIT } from "../src/core/readRows.js";
@@ -26,7 +27,7 @@ function fixtureWithRows(
 }
 
 describe("readTargetRows", () => {
-  it("filter가 없으면 전체 행을 반환한다", async () => {
+  it("returns all rows when there is no filter", async () => {
     const rows = [
       { customer_id: "C-1", name: "Alice", email: "a@example.com" },
       { customer_id: "C-2", name: "Bob", email: "b@example.com" },
@@ -40,7 +41,7 @@ describe("readTargetRows", () => {
     expect(result.rows).toHaveLength(2);
   });
 
-  it("filter_column/filter_value를 적용해 매칭 행만 반환한다", async () => {
+  it("applies filter_column/filter_value and returns only matching rows", async () => {
     const rows = [
       { customer_id: "C-1", name: "Alice", email: "a@example.com", status: "unpaid" },
       { customer_id: "C-2", name: "Bob", email: "b@example.com", status: "paid" },
@@ -55,7 +56,7 @@ describe("readTargetRows", () => {
     expect(result.rows.map((r) => r.values.customer_id)).toEqual(["C-1"]);
   });
 
-  it(`매칭 행이 ${String(READ_ROWS_PREVIEW_LIMIT)}행을 넘으면 잘라서 반환하고 truncated=true`, async () => {
+  it(`truncates and sets truncated=true when matched rows exceed ${String(READ_ROWS_PREVIEW_LIMIT)} rows`, async () => {
     const rows = Array.from({ length: READ_ROWS_PREVIEW_LIMIT + 10 }, (_, i) => ({
       customer_id: `C-${String(i)}`,
       name: `User ${String(i)}`,
@@ -70,7 +71,7 @@ describe("readTargetRows", () => {
     expect(result.truncated).toBe(true);
   });
 
-  it("config 검증 실패 시 ConfigParseError가 그대로 전파된다", async () => {
+  it("propagates ConfigParseError as-is when config validation fails", async () => {
     const client = new InMemorySheetClient({
       [SHEET_ID]: { notifyConfig: { data_tab: "customers" }, tabs: { customers: [] } },
     });

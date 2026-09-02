@@ -1,24 +1,28 @@
-// 도메인 타입 — docs/DESIGN.md §3과 1:1 대응. core/는 이 인터페이스만 알고 외부 IO를 모른다.
+// Domain types — map 1:1 to docs/DESIGN.md §3. core/ knows only these interfaces, not external IO.
 
 export interface SheetRow {
   rowIndex: number;
   values: Record<string, string>;
 }
 
-// sent_log_failed: 실제 발송(provider.send)은 성공했지만 SendLog에 그 사실을 기록하는 과정에서
-// 실패한 상태 — docs/ADVERSARIAL_REVIEW_003.md AR-013. "발송은 됐다"는 사실 자체는 확정이므로
-// failed(재시도 가능)로 두면 안 되고, 사람이 수동으로 SendLog/시트를 확인해야 하는 상태로 별도 분리한다.
+// sent_log_failed: the actual send (provider.send) succeeded, but recording that fact in SendLog
+// failed — docs/ADVERSARIAL_REVIEW_003.md AR-013. Since the fact that "the send happened" is
+// settled, this must not be left as failed (retryable) — it's kept as a separate state that a
+// human must check manually in SendLog/the sheet.
 export type SendStatus = "sent" | "failed" | "skipped_duplicate" | "sent_log_failed";
 
 /**
- * writeStatus가 시트 상태 컬럼 4개(_send_status/_sent_at/_message_id/_error, DESIGN §2)에 반영할 행 단위 갱신.
+ * A per-row update that writeStatus applies to the sheet's 4 status columns
+ * (_send_status/_sent_at/_message_id/_error, DESIGN §2).
  *
- * sentAt/messageId/error는 3단계 값을 가진다 (docs/ADVERSARIAL_REVIEW_003.md AR-014):
- * - `undefined`(필드 자체를 생략) — 그 컬럼은 **건드리지 않는다**. 예: sent 후 같은 행이 다시
- *   skipped_duplicate로 기록돼도 원래 _sent_at/_message_id는 감사 기록으로 남는다.
- * - `string` — 그 값으로 **덮어쓴다**.
- * - `null` — 그 셀을 **명시적으로 지운다**(빈 문자열로). 예: 실패했던 행이 이번에 성공하면
- *   과거 _error가 새 성공 옆에 잘못 남지 않도록 error를 null로 지운다.
+ * sentAt/messageId/error each take a 3-way value (docs/ADVERSARIAL_REVIEW_003.md AR-014):
+ * - `undefined` (the field is omitted entirely) — that column is **left untouched**. E.g. if the
+ *   same row is later recorded again as skipped_duplicate after being sent, the original
+ *   _sent_at/_message_id stays as an audit record.
+ * - `string` — **overwrites** the column with that value.
+ * - `null` — **explicitly clears** the cell (to an empty string). E.g. if a row that previously
+ *   failed now succeeds, error is cleared to null so the old _error doesn't linger next to the new
+ *   success.
  */
 export interface StatusUpdate {
   rowIndex: number;
@@ -58,107 +62,117 @@ export interface NotificationProvider {
 }
 
 /**
- * SendLog에 실제로 저장되는 두 상태뿐이다 — "claimed"(예약됐지만 아직 확정 안 됨) 또는
- * "sent"(commit으로 확정된 실제 발송). failed/skipped_duplicate/sent_log_failed는 SendLog에
- * 저장되지 않는다(시트에만 그 실행의 결과로 기록됨) — 이 타입을 시트용 SendStatus와 분리해 둔
- * 이유다 (docs/ADVERSARIAL_REVIEW_003_RESOLUTION_GAPS.md GAP-001/GAP-002).
+ * Only two states are ever actually stored in SendLog — "claimed" (reserved but not yet
+ * confirmed) or "sent" (an actual send confirmed via commit). failed/skipped_duplicate/
+ * sent_log_failed are never stored in SendLog (they're recorded only in the sheet, as the result
+ * of that run) — this is why this type is kept separate from the sheet's SendStatus
+ * (docs/ADVERSARIAL_REVIEW_003_RESOLUTION_GAPS.md GAP-001/GAP-002).
  */
 export type SendLogEntryStatus = "claimed" | "sent";
 
-/** SqliteSendLog의 unique 키(sheet_id, tab, row_key, template_hash — DESIGN §6)와 1:1 대응. */
+/** Maps 1:1 to SqliteSendLog's unique key (sheet_id, tab, row_key, template_hash — DESIGN §6). */
 export interface SendLogEntry {
   sheetId: string;
   tab: string;
   rowKey: string;
   templateHash: string;
   sendStatus: SendLogEntryStatus;
-  /** claimed면 claim된 시각, sent면 확정(commit)된 시각. */
+  /** The time it was claimed, if claimed; the time it was confirmed (committed), if sent. */
   sentAt: string; // ISO 8601
   messageId?: string;
   error?: string;
 }
 
-/** list()의 조회 옵션 — 기본/최대 개수를 두어 이력이 무한정 쌓여도 응답이 무제한으로 커지지 않게 한다
- * (docs/ADVERSARIAL_REVIEW_003.md AR-015). */
+/** Query options for list() — a default/max count keeps the response from growing unbounded even
+ * as history piles up indefinitely (docs/ADVERSARIAL_REVIEW_003.md AR-015). */
 export interface SendLogListOptions {
-  /** 반환할 최대 건수. 생략하면 DEFAULT_SEND_LOG_LIST_LIMIT, 최대 MAX_SEND_LOG_LIST_LIMIT까지 허용. */
+  /** Max number of entries to return. Defaults to DEFAULT_SEND_LOG_LIST_LIMIT if omitted, capped
+   * at MAX_SEND_LOG_LIST_LIMIT. */
   limit?: number;
-  /** 이전 list() 호출 결과의 nextCursor를 그대로 넘기면 그 다음(더 오래된) 페이지를 반환한다
+  /** Passing the nextCursor from a previous list() result returns the next (older) page
    * (docs/ADVERSARIAL_REVIEW_003_RESOLUTION_GAPS.md GAP-006). */
   cursor?: string;
 }
 
-/** list()의 결과 — entries.length가 limit에 도달했다고 무조건 "더 있다"고 추측(GAP-006에서 지적된
- * 부정확한 근사치)하는 대신, 실제로 limit+1개를 조회해 정확한 hasMore를 계산한다. */
+/** Result of list() — instead of assuming "there's more" whenever entries.length reaches limit
+ * (the inaccurate approximation flagged in GAP-006), this actually fetches limit+1 entries to
+ * compute an exact hasMore. */
 export interface SendLogListResult {
   entries: SendLogEntry[];
   hasMore: boolean;
-  /** hasMore===true일 때만 존재. 다음 페이지 조회 시 options.cursor로 그대로 넘긴다. */
+  /** Present only when hasMore===true. Pass it back as options.cursor to fetch the next page. */
   nextCursor?: string;
 }
 
 export const DEFAULT_SEND_LOG_LIST_LIMIT = 200;
 export const MAX_SEND_LOG_LIST_LIMIT = 1000;
 
-/** claim()의 결과. claimed===true일 때만 token이 존재하며, commit()/release()에 그대로 넘겨야
- * 한다 — claim이 만료되어 사람이 forceReleaseStaleClaim()으로 회수한 뒤 같은 키가 다시 claim되면
- * 새 token이 발급되므로, 원래 시도(좀비 프로세스 등)가 뒤늦게 깨어나 옛 token으로 commit/release를
- * 불러도 새 claim을 건드리지 못한다(GAP-001). */
+/** Result of claim(). token exists only when claimed===true, and must be passed back verbatim to
+ * commit()/release() — if a claim expires and a human reclaims it via forceReleaseStaleClaim(),
+ * and the same key is claimed again, a new token is issued, so the original attempt (e.g. a
+ * zombie process) waking up late and calling commit/release with the old token cannot touch the
+ * new claim (GAP-001). */
 export interface ClaimResult {
   claimed: boolean;
   token?: string;
 }
 
 /**
- * forceReleaseStaleClaim()의 olderThanMs를 호출 즉시 검증한다 — 어댑터(SqliteSendLog/InMemorySendLog)
- * 양쪽이 이 함수 하나만 공유해서 쓴다(docs/ADVERSARIAL_REVIEW_003_STATUS_GAPS.md STATUS-GAP-002).
- * 음수를 주면 cutoff가 미래가 되어 방금 만든 최신 claim까지 "오래된 claim"으로 오판해 즉시
- * 회수(삭제)해버릴 수 있다 — 다른 실행이 그 직후 같은 행을 다시 claim해 중복 발송으로 이어진다.
- * NaN/Infinity/소수도 같은 이유로 거부한다. 검증에 실패하면 어떤 claim도 건드리기 전에 던진다.
+ * Validates forceReleaseStaleClaim()'s olderThanMs immediately at call time — both adapters
+ * (SqliteSendLog/InMemorySendLog) share this single function
+ * (docs/ADVERSARIAL_REVIEW_003_STATUS_GAPS.md STATUS-GAP-002).
+ * A negative value would push the cutoff into the future, misjudging even the most recently
+ * created claim as a "stale claim" and reclaiming (deleting) it immediately — a different run
+ * could then claim the same row right after, leading to a duplicate send.
+ * NaN/Infinity/non-integers are rejected for the same reason. On validation failure this throws
+ * before touching any claim.
  */
 export function assertValidStaleClaimThreshold(olderThanMs: number): void {
   if (!Number.isInteger(olderThanMs) || olderThanMs < 0) {
     throw new Error(
-      `forceReleaseStaleClaim: olderThanMs 값이 올바르지 않습니다 (받은 값: ${olderThanMs}). ` +
-        "0 이상의 정수(밀리초 단위)만 허용합니다. 예: 30 * 60 * 1000 (30분). " +
-        "음수/NaN/Infinity/소수는 최근 claim까지 '오래됨'으로 잘못 판정해 중복 발송으로 이어질 " +
-        "수 있어 거부됩니다 — 아무 claim도 삭제되지 않았습니다.",
+      `forceReleaseStaleClaim: invalid olderThanMs value (received: ${olderThanMs}). ` +
+        "Only integers >= 0 (in milliseconds) are allowed. Example: 30 * 60 * 1000 (30 minutes). " +
+        "Negative/NaN/Infinity/non-integer values are rejected because they would misjudge even " +
+        "recent claims as 'stale', leading to duplicate sends — no claim was deleted.",
     );
   }
 }
 
 /**
- * SendLog — docs/ADVERSARIAL_REVIEW_003.md AR-011/AR-013, 이후
- * docs/ADVERSARIAL_REVIEW_003_RESOLUTION_GAPS.md GAP-001/002/003/006 대응으로 claim/commit/release
- * 3단계 + 소유권 토큰 + 만료 기반 수동 복구로 재설계됐다.
+ * SendLog — following docs/ADVERSARIAL_REVIEW_003.md AR-011/AR-013, and later addressed by
+ * docs/ADVERSARIAL_REVIEW_003_RESOLUTION_GAPS.md GAP-001/002/003/006, this was redesigned around a
+ * claim/commit/release 3-phase flow with ownership tokens and expiry-based manual recovery.
  *
- * 예전 record()는 "먼저 전부 wasSent() 확인 → 나중에 전부 send"라는 배치 구조상, 같은 실행 안에
- * 같은 rowKey가 두 번 있거나 다른 프로세스가 동시에 실행되면 두 곳 다 wasSent=false를 보고 실제로
- * 중복 발송될 수 있었다(TOCTOU). claim()이 "확인"과 "예약"을 원자적 단일 연산으로 묶어 이 틈을
- * 없앤다.
+ * The old record() had a batch structure of "check wasSent() for all rows first → then send all
+ * rows", so if the same rowKey appeared twice within one run, or two processes ran concurrently,
+ * both could see wasSent=false and actually send a duplicate (TOCTOU). claim() closes this gap by
+ * combining "check" and "reserve" into a single atomic operation.
  *
- * claim 직후(commit/release 전) 프로세스가 죽으면 그 claim은 "claimed" 상태로 영구히 남는다 —
- * 이게 자동으로 "sent"로도, 자동으로 재사용 가능으로도 되지 않는다(실제로 발송됐는지 알 수 없기
- * 때문). 이런 claim은 list()에서 sendStatus="claimed"로 그대로 보이므로 운영자가 발견할 수 있고,
- * 충분히 오래됐다고 판단되면 forceReleaseStaleClaim()으로 **명시적으로만** 회수한다 — 자동
- * 만료·자동 재사용은 절대 하지 않는다(발송됐을 가능성을 배제할 수 없어서다).
+ * If a process dies right after claim() (before commit/release), that claim stays "claimed"
+ * forever — it is never automatically turned into "sent", nor automatically made reusable (since
+ * whether it was actually sent is unknown). Such a claim still shows up in list() as
+ * sendStatus="claimed" so an operator can find it, and once it's judged old enough, it can be
+ * reclaimed via forceReleaseStaleClaim() **only explicitly** — there is never automatic expiry or
+ * automatic reuse (because the possibility that it was sent can't be ruled out).
  *
- * 파이프라인의 올바른 사용 순서(행 하나마다, 다음 행으로 넘어가기 전에 반드시 완료):
- *   1. claim() — claimed=false면 이미 선점됨(같은 배치의 앞선 행 / 동시 실행 중인 다른 프로세스 /
- *      과거 성공 / 아직 해소 안 된 claim) → provider를 호출하지 말고 skipped_duplicate 처리.
- *   2. claimed=true면 provider.send() 호출.
- *   3a. 성공하면 commit(token, ...) — 예약을 최종 발송 기록으로 확정.
- *   3b. 실패(예외 포함)하면 release(token) — 예약을 해제해 다음 실행에서 재시도 가능하게 한다.
- * dry-run 미리보기는 상태를 바꾸면 안 되므로 claim() 대신 읽기 전용 wasSent()를 쓴다.
+ * Correct usage order in the pipeline (per row, must fully complete before moving to the next row):
+ *   1. claim() — if claimed=false, it's already taken (an earlier row in the same batch / another
+ *      process running concurrently / a past success / a claim not yet resolved) → don't call the
+ *      provider, treat it as skipped_duplicate.
+ *   2. if claimed=true, call provider.send().
+ *   3a. on success, commit(token, ...) — confirms the reservation as a final send record.
+ *   3b. on failure (including exceptions), release(token) — releases the reservation so the next
+ *      run can retry.
+ * A dry-run preview must not change state, so it uses the read-only wasSent() instead of claim().
  */
 export interface SendLog {
   /**
-   * (sheetId, tab, rowKey, templateHash)에 대한 발송 권리를 원자적으로 예약한다.
-   * claimed=true면 이 호출자가 유일하게 발송을 시도해도 된다는 뜻이며, 반환된 token을 반드시
-   * commit() 또는 release()에 그대로 넘겨야 한다(안 하면 영구히 재시도가 막힌다 — 사람이
-   * forceReleaseStaleClaim()으로 명시적으로 회수하지 않는 한).
-   * claimed=false면 이미 다른 곳이 선점했다는 뜻 — 발송을 시도하지 말고 skipped_duplicate로
-   * 처리해야 한다.
+   * Atomically reserves the right to send for (sheetId, tab, rowKey, templateHash).
+   * claimed=true means this caller is the only one allowed to attempt the send, and the returned
+   * token must be passed back verbatim to commit() or release() (otherwise retries stay blocked
+   * forever — unless a human explicitly reclaims it via forceReleaseStaleClaim()).
+   * claimed=false means someone else already claimed it — don't attempt the send; treat it as
+   * skipped_duplicate.
    */
   claim(
     sheetId: string,
@@ -169,9 +183,10 @@ export interface SendLog {
   ): ClaimResult;
 
   /**
-   * claim()이 발급한 token과 일치할 때만 실제 발송이 성공했음을 확정 기록한다. token이 일치하지
-   * 않으면(예: 그 사이 사람이 회수하고 다른 실행이 새로 claim함) 아무 것도 확정하지 않고 에러를
-   * 던진다 — 좀비 프로세스가 남의 claim을 잘못 확정하는 사고를 막는다(GAP-001).
+   * Confirms that the actual send succeeded only if the token matches the one claim() issued. If
+   * the token doesn't match (e.g. a human reclaimed it in the meantime and another run claimed it
+   * anew), nothing is confirmed and an error is thrown — this prevents a zombie process from
+   * wrongly confirming someone else's claim (GAP-001).
    */
   commit(
     sheetId: string,
@@ -184,17 +199,19 @@ export interface SendLog {
   ): void;
 
   /**
-   * claim()이 발급한 token과 일치할 때만 예약을 해제한다 — 다음 실행에서 재시도 가능해진다.
-   * token이 일치하지 않으면(이미 회수됐거나 다른 claim으로 대체됨) 조용히 아무 것도 하지 않는다
-   * (이미 목표 상태이거나, 더 이상 이 호출자의 claim이 아니므로 건드릴 권한이 없다 — GAP-001).
+   * Releases the reservation only if the token matches the one claim() issued — this makes it
+   * retryable on the next run. If the token doesn't match (already reclaimed, or replaced by a
+   * different claim), this silently does nothing (it's already in the target state, or this
+   * caller no longer has permission to touch it since it's no longer their claim — GAP-001).
    */
   release(sheetId: string, tab: string, rowKey: string, templateHash: string, token: string): void;
 
   /**
-   * claim된 지 olderThanMs 이상 지났고 아직 commit되지 않은 claim만 강제로 회수한다(token 불필요 —
-   * 사람이 직접 검토한 뒤 수동으로만 호출하는 것을 전제한다. MCP 도구로는 노출하지 않는다 —
-   * 자율 에이전트가 "발송됐을 수도 있는" 상태를 스스로 판단해 재사용 가능하게 만드는 것은 안전하지
-   * 않다). 조건에 맞는 claim이 없으면 아무 것도 하지 않고 false를 반환한다.
+   * Force-reclaims only a claim that was claimed at least olderThanMs ago and not yet committed
+   * (no token needed — this assumes a human has reviewed it and calls it manually only. It is not
+   * exposed as an MCP tool — it isn't safe for an autonomous agent to judge on its own that a
+   * state "might have been sent" and make it reusable). If no claim matches, this does nothing and
+   * returns false.
    */
   forceReleaseStaleClaim(
     sheetId: string,
@@ -204,20 +221,22 @@ export interface SendLog {
     olderThanMs: number,
   ): boolean;
 
-  /** 이미 확정 발송(commit)됐거나 아직 처리 중(claimed)인 예약이 있는지 읽기 전용으로 조회한다.
-   * dry-run 미리보기 전용 — 상태를 바꾸지 않으므로 발송 흐름의 중복 방지에는 쓰면 안 된다
-   * (claim()을 써야 한다). */
+  /** Read-only check for whether a reservation already exists, either confirmed (committed) as
+   * sent or still in progress (claimed). For dry-run preview only — since it doesn't change state,
+   * it must not be used for duplicate prevention in the actual send flow (use claim() instead). */
   wasSent(sheetId: string, tab: string, rowKey: string, templateHash: string): boolean;
 
   list(sheetId: string, options?: SendLogListOptions): SendLogListResult;
 }
 
-/** 테스트 결정론용 — 실제 구현은 SqliteSendLog/파이프라인에서 Date.now() 대신 이 인터페이스를 주입받는다 */
+/** For test determinism — the real implementation is injected with this interface instead of
+ * Date.now() in SqliteSendLog/the pipeline */
 export interface Clock {
   now(): Date;
 }
 
-/** core/template.ts renderTemplate()의 반환 타입. 결측 키는 throw가 아니라 missing[]로 담는다 */
+/** Return type of core/template.ts renderTemplate(). Missing keys are collected into missing[]
+ * instead of throwing */
 export interface RenderResult {
   text: string;
   missing: string[];

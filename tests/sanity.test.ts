@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-// T0 더미 테스트 — 스캐폴딩(typecheck/lint/test 파이프라인)이 동작함을 확인한다.
-// 실제 도메인 테스트는 T1부터 tests/config.test.ts 등으로 추가된다.
+// T0 dummy test — confirms the scaffolding (typecheck/lint/test pipeline) works.
+// Real domain tests are added starting at T1, in files like tests/config.test.ts.
 describe("scaffolding", () => {
-  it("test runner가 동작한다", () => {
+  it("the test runner works", () => {
     expect(1 + 1).toBe(2);
   });
 });

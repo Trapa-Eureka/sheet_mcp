@@ -1,50 +1,57 @@
-// 사람 전용 운영 CLI — stale claim(commit도 release도 안 된 채 남아 있는 예약)을 조회하고,
-// 명시적 확인을 거쳐서만 강제로 회수한다.
-// docs/ADVERSARIAL_REVIEW_003_STATUS_GAPS.md STATUS-GAP-003 대응.
+// Human-only operational CLI — inspects stale claims (reservations left neither committed nor
+// released) and force-releases them only after an explicit confirmation.
+// Addresses docs/ADVERSARIAL_REVIEW_003_STATUS_GAPS.md STATUS-GAP-003.
 //
-// scripts/smoke.ts와 달리 이 파일은 npm 패키지로 공개 배포되는 두 번째 bin이다
-// (`sheet-mcp-recover`, package.json). smoke.ts는 실제 시트/이메일 자격증명이 있어야만 의미가
-// 있어 저장소를 clone한 개발자만 쓰지만, stale claim 복구는 `npx sheet-mcp`로 설치한 운영자도
-// 똑같이 필요하다 — 그래서 src/adapters와 같은 상대 경로로 컴파일돼 dist/에 함께 실려야 하는
-// src/cli/에 둔다(docs/ADVERSARIAL_REVIEW_004.md AR-019: 예전엔 scripts/에 있어서 공개 tarball에
-// 아예 포함되지 않았고, README가 공식 절차로 안내하는데도 npx로 설치한 사람은 실행할 방법이 없었다).
-// CI/에이전트 게이트(npm run check)에는 포함하지 않는다 — 로직은 core/adapters 테스트로 이미
-// 커버되고, 이 파일 자체는 CLI 파싱/조립만 한다.
+// Unlike scripts/smoke.ts, this file is the second bin published in the npm package
+// (`sheet-mcp-recover`, package.json). smoke.ts only makes sense with real sheet/email
+// credentials, so only developers who cloned the repo use it — but stale claim recovery is
+// just as necessary for operators who installed via `npx sheet-mcp`. That's why it lives in
+// src/cli/, which is compiled with the same relative path as src/adapters and shipped together
+// under dist/ (docs/ADVERSARIAL_REVIEW_004.md AR-019: it used to live under scripts/, so it was
+// never included in the public tarball at all — README pointed to it as the official procedure,
+// but anyone who installed via npx had no way to run it).
+// Not included in the CI/agent gate (npm run check) — the logic is already covered by
+// core/adapters tests, and this file itself only does CLI parsing/wiring.
 //
-// 이 CLI가 절대 하지 않는 것:
-// - 자동 판단으로 claim을 회수하지 않는다. --confirm 없이는 조회만 하고 아무 것도 지우지 않는다
-//   (기본 실행은 DB를 readonly로 연다 — 코드 버그가 있어도 SQLite 자체가 쓰기를 거부한다).
-// - 이미 commit(확정 발송)된 기록은 어떤 옵션으로도 지우지 않는다 — forceReleaseStaleClaim() 자체가
-//   committed=0인 행만 대상으로 삼는다(src/adapters/sqliteSendLog.ts).
-// - 실제로 이메일을 재발송하지 않는다. claim을 회수해도 그 자체로는 아무 것도 발송되지 않는다 —
-//   회수 후 재시도하려면 별도로 파이프라인(발송 도구)을 다시 실행해야 한다.
+// What this CLI never does:
+// - It never force-releases a claim on its own judgment. Without --confirm it only inspects and
+//   deletes nothing (the default run opens the DB readonly — even if there's a code bug, SQLite
+//   itself refuses any write).
+// - It never deletes an already-committed (confirmed sent) record, under any option —
+//   forceReleaseStaleClaim() itself only targets rows where committed=0
+//   (src/adapters/sqliteSendLog.ts).
+// - It never actually resends an email. Releasing a claim by itself sends nothing — to retry
+//   after release you must separately re-run the send pipeline (the send tool).
 //
-// 사용법(레포 clone, 개발용):
+// Usage (repo clone, for development):
 //   npm run recover:stale-claim -- \
 //     --db ./data/sendlog.db --sheet-id <sheetId> --tab <tab> \
 //     --row-key <rowKey> --template-hash <templateHash>
 //
-// 사용법(npx sheet-mcp 설치, publish 이후):
+// Usage (installed via npx sheet-mcp, after publish):
 //   npx sheet-mcp-recover \
 //     --db ./data/sendlog.db --sheet-id <sheetId> --tab <tab> \
 //     --row-key <rowKey> --template-hash <templateHash>
-//   (여기까지만 실행하면 조회만 한다. 아무 것도 바뀌지 않는다.)
+//   (running only this far just inspects. Nothing is changed.)
 //
 //   npx sheet-mcp-recover \
 //     --db ./data/sendlog.db --sheet-id <sheetId> --tab <tab> \
 //     --row-key <rowKey> --template-hash <templateHash> \
-//     --older-than-ms 1800000 --reason "provider 대시보드에서 미발송 확인함" --confirm
-//   (실제로 claim을 회수한다.)
+//     --older-than-ms 1800000 --reason "confirmed not sent in the provider dashboard" --confirm
+//   (actually releases the claim.)
 //
-// 옵션:
-//   --older-than-ms   기본 1800000(30분). 5분(300000ms) 미만은 --i-understand-the-risk 없이는
-//                     거부한다 — 그만큼 최근 claim은 아직 발송이 진행 중일 가능성이 높다.
-//   --reason          왜 회수하는지 한 줄 메모. 감사 로그에 그대로 남는다.
-//   --confirm         실제로 forceReleaseStaleClaim()을 호출한다. 없으면 조회만.
-//   --i-understand-the-risk   --older-than-ms가 운영 최소값보다 짧을 때만 필요.
+// Options:
+//   --older-than-ms   Default 1800000 (30 minutes). Values under 5 minutes (300000ms) are
+//                     rejected without --i-understand-the-risk — a claim that recent is very
+//                     likely still mid-send.
+//   --reason          A one-line note on why you're releasing it. Recorded verbatim in the audit
+//                     log.
+//   --confirm         Actually calls forceReleaseStaleClaim(). Without it, inspection only.
+//   --i-understand-the-risk   Required only when --older-than-ms is shorter than the operational
+//                     minimum.
 //
-// 모든 실행(조회든 회수든)은 감사 로그(JSON Lines)에 한 줄 남긴다.
-// 기본 경로: ./data/recovery-audit.log, RECOVERY_AUDIT_LOG_PATH로 재지정 가능.
+// Every run (inspect or release) appends one line to the audit log (JSON Lines).
+// Default path: ./data/recovery-audit.log, overridable via RECOVERY_AUDIT_LOG_PATH.
 
 import Database from "better-sqlite3";
 import { appendFileSync, existsSync, mkdirSync } from "node:fs";
@@ -52,10 +59,11 @@ import { dirname } from "node:path";
 import { detectSchemaVersion, SqliteSendLog } from "../adapters/sqliteSendLog.js";
 import { assertValidStaleClaimThreshold } from "../core/types.js";
 
-const DEFAULT_OLDER_THAN_MS = 30 * 60 * 1000; // 30분
-// 운영 정책상 보수적 최소값(STATUS-GAP-002) — 이보다 짧은 값은 발송이 아직 진행 중인 claim을
-// 잘못 회수할 위험이 매우 높아서 별도 플래그 없이는 막는다.
-const OPERATIONAL_MIN_OLDER_THAN_MS = 5 * 60 * 1000; // 5분
+const DEFAULT_OLDER_THAN_MS = 30 * 60 * 1000; // 30 minutes
+// Conservative operational minimum (STATUS-GAP-002) — anything shorter carries a very high risk
+// of wrongly releasing a claim whose send is still in flight, so it's blocked without a separate
+// flag.
+const OPERATIONAL_MIN_OLDER_THAN_MS = 5 * 60 * 1000; // 5 minutes
 
 interface Args {
   dbPath: string;
@@ -70,19 +78,19 @@ interface Args {
 }
 
 function printUsage(): void {
-  console.error(`사용법:
+  console.error(`Usage:
   npx sheet-mcp-recover --db <path> --sheet-id <id> --tab <tab> \\
     --row-key <rowKey> --template-hash <hash> \\
     [--older-than-ms 1800000] [--reason "..."] [--confirm] [--i-understand-the-risk]
 
-(레포를 clone해 개발 중이라면 npx 대신 npm run recover:stale-claim --)
+(If developing from a cloned repo, use npm run recover:stale-claim -- instead of npx)
 
---confirm 없이 실행하면 조회만 하고 아무 것도 지우지 않습니다.
-자세한 안내는 src/cli/recoverStaleClaim.ts 상단 주석을 참고하세요.`);
+Running without --confirm only inspects and deletes nothing.
+See the comment at the top of src/cli/recoverStaleClaim.ts for details.`);
 }
 
 function fail(message: string): never {
-  console.error(`오류: ${message}`);
+  console.error(`Error: ${message}`);
   printUsage();
   process.exit(1);
 }
@@ -98,7 +106,7 @@ function parseArgs(argv: string[]): Args {
     if (idx === -1) return undefined;
     const value = argv[idx + 1];
     if (value === undefined || value.startsWith("--")) {
-      fail(`${flag} 다음에 값이 필요합니다.`);
+      fail(`${flag} must be followed by a value.`);
     }
     return value;
   };
@@ -109,7 +117,7 @@ function parseArgs(argv: string[]): Args {
   const rowKey = get("--row-key");
   const templateHash = get("--template-hash");
   if (!dbPath || !sheetId || !tab || !rowKey || !templateHash) {
-    fail("--db, --sheet-id, --tab, --row-key, --template-hash는 모두 필수입니다.");
+    fail("--db, --sheet-id, --tab, --row-key, and --template-hash are all required.");
   }
 
   const olderThanMsRaw = get("--older-than-ms");
@@ -142,15 +150,15 @@ interface InspectResult {
   ageMs?: number;
 }
 
-// DB를 readonly로 열어 조회한다 — 코드에 버그가 있어도 SQLite 자체가 어떤 쓰기도 거부하므로,
-// 이 함수는 구조적으로 아무 것도 지울 수 없다.
+// Opens the DB readonly to inspect — even with a code bug, SQLite itself refuses any write, so
+// this function is structurally incapable of deleting anything.
 function inspect(dbPath: string, args: Args): InspectResult {
   const db = new Database(dbPath, { readonly: true, fileMustExist: true });
   try {
     const version = detectSchemaVersion(db);
     if (version === "none") return { version, found: false };
     if (version === "v1_record") {
-      // v1은 claim/commit 개념이 없다 — 서버를 한 번 기동하면 자동으로 v2로 마이그레이션된다.
+      // v1 has no claim/commit concept — starting the server once auto-migrates it to v2.
       return { version, found: false };
     }
     const row = db
@@ -174,32 +182,33 @@ function inspect(dbPath: string, args: Args): InspectResult {
 
 function printInspectResult(result: InspectResult): void {
   if (result.version === "none") {
-    console.log("DB에 send_log 테이블이 아직 없습니다 — claim 기록이 전혀 없습니다.");
+    console.log("The DB has no send_log table yet — there are no claim records at all.");
     return;
   }
   if (result.version === "v1_record") {
     console.log(
-      "이 DB는 아직 이전(v1) 스키마입니다. 서버(또는 이 CLI의 --confirm 실행)를 한 번 기동하면 " +
-        "자동으로 새 스키마(v2)로 마이그레이션됩니다(기존 'sent' 기록은 보존, 원본은 백업 " +
-        "테이블로 남음 — STATUS-GAP-001). 마이그레이션 후 다시 조회하세요.",
+      "This DB is still on the old (v1) schema. Starting the server once (or running this CLI " +
+        "with --confirm) will auto-migrate it to the new schema (v2) — existing 'sent' records " +
+        "are preserved, and the original table is kept as a backup table (STATUS-GAP-001). " +
+        "Re-inspect after migrating.",
     );
     return;
   }
   if (!result.found) {
-    console.log("해당 (sheetId, tab, rowKey, templateHash) 키에 대한 claim 기록이 없습니다.");
+    console.log("No claim record found for that (sheetId, tab, rowKey, templateHash) key.");
     return;
   }
   const ageSec = Math.floor((result.ageMs ?? 0) / 1000);
   if (result.committed) {
     console.log(
-      `이미 확정(commit)된 발송 기록입니다 (sent_at=${result.claimedOrSentAt}, ${ageSec}초 전). ` +
-        "이 기록은 --confirm을 줘도 forceReleaseStaleClaim()이 절대 지우지 않습니다.",
+      `This is an already-committed send record (sent_at=${result.claimedOrSentAt}, ${ageSec}s ago). ` +
+        "forceReleaseStaleClaim() will never delete this record, even with --confirm.",
     );
   } else {
     console.log(
-      `아직 확정되지 않은(claimed) 예약입니다 (claimed_at=${result.claimedOrSentAt}, ${ageSec}초 전, ` +
-        `${Math.floor(ageSec / 60)}분 경과). --confirm과 충분히 큰 --older-than-ms로 다시 실행하면 ` +
-        "회수할 수 있습니다.",
+      `This is a not-yet-committed (claimed) reservation (claimed_at=${result.claimedOrSentAt}, ` +
+        `${ageSec}s ago, ${Math.floor(ageSec / 60)} minutes elapsed). Re-run with --confirm and a ` +
+        "sufficiently large --older-than-ms to release it.",
     );
   }
 }
@@ -207,17 +216,17 @@ function printInspectResult(result: InspectResult): void {
 function main(): void {
   const args = parseArgs(process.argv.slice(2));
 
-  // NaN/Infinity/음수/소수는 어떤 조회·삭제도 하기 전에 즉시 거부한다.
+  // Reject NaN/Infinity/negative/fractional values immediately, before any inspect or delete.
   assertValidStaleClaimThreshold(args.olderThanMs);
   if (args.olderThanMs < OPERATIONAL_MIN_OLDER_THAN_MS && !args.iUnderstandTheRisk) {
     fail(
-      `--older-than-ms=${args.olderThanMs}는 운영 최소값 ${OPERATIONAL_MIN_OLDER_THAN_MS}ms(5분)보다 ` +
-        "짧습니다. 그만큼 최근 claim은 아직 발송이 진행 중일 가능성이 높습니다. 정말 그 값을 쓰려면 " +
-        "--i-understand-the-risk 플래그를 추가하세요.",
+      `--older-than-ms=${args.olderThanMs} is shorter than the operational minimum of ` +
+        `${OPERATIONAL_MIN_OLDER_THAN_MS}ms (5 minutes). A claim that recent is very likely still ` +
+        "mid-send. If you really want to use that value, add the --i-understand-the-risk flag.",
     );
   }
   if (!existsSync(args.dbPath)) {
-    fail(`DB 파일이 없습니다: ${args.dbPath}`);
+    fail(`DB file not found: ${args.dbPath}`);
   }
 
   const before = inspect(args.dbPath, args);
@@ -235,16 +244,17 @@ function main(): void {
   });
 
   if (!args.confirm) {
-    console.log("\n--confirm 없이 실행했으므로 아무 것도 지우지 않았습니다.");
+    console.log("\nRan without --confirm, so nothing was deleted.");
     return;
   }
   if (before.version !== "v2_claim" || !before.found || before.committed) {
-    console.log("\n회수할 대상이 없어 --confirm을 적용하지 않았습니다.");
+    console.log("\nNo target to release, so --confirm was not applied.");
     return;
   }
 
-  // 여기서부터만 실제로 DB를 쓴다 — SqliteSendLog 생성자가 필요하면 v1→v2 마이그레이션도
-  // 수행한다(이미 v2로 확인됐으므로 이 경로에서는 마이그레이션이 일어나지 않는다).
+  // Only from here does this actually write to the DB — the SqliteSendLog constructor also
+  // performs a v1->v2 migration if needed (already confirmed as v2 above, so no migration
+  // happens on this path).
   const sendLog = new SqliteSendLog(args.dbPath);
   let released: boolean;
   try {
@@ -273,16 +283,17 @@ function main(): void {
 
   if (released) {
     console.log(
-      "\nclaim을 회수했습니다. 재발송하기 전에 반드시 이메일 Provider(Resend) 대시보드에서 이 " +
-        `수신자·시각(claimed_at=${before.claimedOrSentAt}) 근처에 실제로 발송된 이메일이 없는지 ` +
-        "확인하세요. 확인 없이 바로 재시도하면 실제로는 발송됐던 메일이 중복 발송될 수 있습니다. " +
-        "확인이 끝나면 별도로 발송 파이프라인을 다시 실행해 이 행을 재시도하세요.",
+      "\nClaim released. Before resending, be sure to check the email provider's (Resend) " +
+        `dashboard to confirm no email was actually sent to this recipient around this time ` +
+        `(claimed_at=${before.claimedOrSentAt}). Retrying without checking risks sending a ` +
+        "duplicate email that actually already went out. Once you've confirmed, separately " +
+        "re-run the send pipeline to retry this row.",
     );
   } else {
     console.log(
-      "\nclaim을 회수하지 못했습니다 — 조회 시점 이후 다른 실행이 먼저 commit/release했거나, " +
-        "조건(committed=0 그리고 충분히 오래됨)을 만족하지 않게 됐을 수 있습니다. 다시 조회해서 " +
-        "현재 상태를 확인하세요.",
+      "\nFailed to release the claim — another run may have already committed/released it since " +
+        "the inspection, or the conditions (committed=0 and old enough) may no longer hold. " +
+        "Re-inspect to check the current state.",
     );
   }
 }

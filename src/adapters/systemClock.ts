@@ -1,6 +1,6 @@
-// Clock의 실제 구현 — 시스템 현재 시각을 반환한다.
-// 설계: docs/DESIGN.md §3(Clock). 테스트는 결정론이 필요하므로 src/mocks/fixedClock.ts를 쓴다
-// (docs/TESTING.md §1) — 이 어댑터 자체는 단순 위임이라 별도 단위 테스트를 두지 않는다.
+// Real implementation of Clock — returns the current system time.
+// Design: docs/DESIGN.md §3 (Clock). Tests need determinism, so they use src/mocks/fixedClock.ts
+// (docs/TESTING.md §1) — this adapter itself is a simple delegation, so it has no separate unit test.
 
 import type { Clock } from "../core/types.js";
 

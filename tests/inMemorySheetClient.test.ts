@@ -32,13 +32,13 @@ describe("InMemorySheetClient", () => {
     client = new InMemorySheetClient({ "sheet-1": simpleFixture() });
   });
 
-  it("readConfig가 notify_config 원본을 반환한다", async () => {
+  it("readConfig returns the original notify_config", async () => {
     const config = await client.readConfig("sheet-1");
     expect(config.data_tab).toBe("customers");
     expect(config.channel).toBe("email");
   });
 
-  it("readRows가 2행부터 rowIndex를 매긴다 (1행은 헤더)", async () => {
+  it("readRows assigns rowIndex starting from row 2 (row 1 is the header)", async () => {
     const rows = await client.readRows("sheet-1", "customers");
     expect(rows).toHaveLength(2);
     expect(rows[0]).toEqual({
@@ -48,21 +48,21 @@ describe("InMemorySheetClient", () => {
     expect(rows[1]?.rowIndex).toBe(3);
   });
 
-  it("readRows가 반환한 행을 변형해도 내부 상태에 영향이 없다 (재조회 시 원본 유지)", async () => {
+  it("mutating rows returned by readRows does not affect internal state (original is preserved on re-fetch)", async () => {
     const rows = await client.readRows("sheet-1", "customers");
     rows[0]!.values.name = "MUTATED";
     const rowsAgain = await client.readRows("sheet-1", "customers");
     expect(rowsAgain[0]?.values.name).toBe("Alice");
   });
 
-  it("readConfig가 반환한 객체를 변형해도 내부 상태에 영향이 없다", async () => {
+  it("mutating the object returned by readConfig does not affect internal state", async () => {
     const config = await client.readConfig("sheet-1");
     config.channel = "MUTATED";
     const configAgain = await client.readConfig("sheet-1");
     expect(configAgain.channel).toBe("email");
   });
 
-  it("loadSheet에 넘긴 원본 fixture 객체를 나중에 변형해도 내부 상태에 영향이 없다", async () => {
+  it("mutating the original fixture object passed to loadSheet afterward does not affect internal state", async () => {
     const fixture = simpleFixture();
     client.loadSheet("sheet-3", fixture);
     fixture.notifyConfig.channel = "MUTATED";
@@ -74,7 +74,7 @@ describe("InMemorySheetClient", () => {
     expect(rows[0]?.values.name).toBe("Alice");
   });
 
-  it("ensureStatusColumns는 상태 컬럼 4개를 빈 값으로 채우고, 재조회 시 반영된다", async () => {
+  it("ensureStatusColumns fills the 4 status columns with empty values, reflected on re-fetch", async () => {
     await client.ensureStatusColumns("sheet-1", "customers");
     const rows = await client.readRows("sheet-1", "customers");
     for (const row of rows) {
@@ -85,14 +85,14 @@ describe("InMemorySheetClient", () => {
     }
   });
 
-  it("ensureStatusColumns는 기존 사용자 데이터 컬럼 값을 건드리지 않는다", async () => {
+  it("ensureStatusColumns does not touch existing user data column values", async () => {
     await client.ensureStatusColumns("sheet-1", "customers");
     const rows = await client.readRows("sheet-1", "customers");
     expect(rows[0]?.values.name).toBe("Alice");
     expect(rows[0]?.values.email).toBe("alice@example.com");
   });
 
-  it("writeStatus가 메모리에 반영되고 재조회 시 그대로 나온다", async () => {
+  it("writeStatus is applied in memory and comes back unchanged on re-fetch", async () => {
     await client.ensureStatusColumns("sheet-1", "customers");
     await client.writeStatus("sheet-1", "customers", [
       { rowIndex: 2, sendStatus: "sent", sentAt: "2026-09-01T00:00:00.000Z", messageId: "msg-1" },
@@ -113,13 +113,13 @@ describe("InMemorySheetClient", () => {
     });
   });
 
-  it("writeStatus는 결측 필드(sentAt/messageId/error)를 지우지 않고 기존 값을 보존한다", async () => {
+  it("writeStatus preserves existing values for missing fields (sentAt/messageId/error) instead of clearing them", async () => {
     await client.ensureStatusColumns("sheet-1", "customers");
     await client.writeStatus("sheet-1", "customers", [
       { rowIndex: 2, sendStatus: "sent", sentAt: "2026-09-01T00:00:00.000Z", messageId: "msg-1" },
     ]);
 
-    // 같은 행이 이후 실행에서 skipped_duplicate로 기록돼도 messageId/error는 명시하지 않는 흔한 케이스
+    // A common case: even when the same row is later recorded as skipped_duplicate, messageId/error aren't specified
     await client.writeStatus("sheet-1", "customers", [
       { rowIndex: 2, sendStatus: "skipped_duplicate" },
     ]);
@@ -127,12 +127,12 @@ describe("InMemorySheetClient", () => {
     const rows = await client.readRows("sheet-1", "customers");
     expect(rows[0]?.values).toMatchObject({
       _send_status: "skipped_duplicate",
-      _sent_at: "2026-09-01T00:00:00.000Z", // 지워지지 않고 이전 발송 기록이 남아 있음
+      _sent_at: "2026-09-01T00:00:00.000Z", // not cleared — the previous send record remains
       _message_id: "msg-1",
     });
   });
 
-  it("writeStatus는 null 필드를 빈 문자열로 명시적으로 지운다(undefined=보존과 구분, AR-014)", async () => {
+  it("writeStatus explicitly clears null fields to an empty string (distinct from undefined=preserve, AR-014)", async () => {
     await client.ensureStatusColumns("sheet-1", "customers");
     await client.writeStatus("sheet-1", "customers", [
       {
@@ -142,7 +142,7 @@ describe("InMemorySheetClient", () => {
       },
     ]);
 
-    // 재시도로 성공하면 과거 _error를 null로 지운다(undefined였다면 남아있었을 것).
+    // On a successful retry, the past _error is cleared with null (it would have remained if it were undefined).
     await client.writeStatus("sheet-1", "customers", [
       { rowIndex: 2, sendStatus: "sent", sentAt: "2026-09-01T00:00:00.000Z", error: null },
     ]);
@@ -151,7 +151,7 @@ describe("InMemorySheetClient", () => {
     expect(rows[0]?.values).toMatchObject({ _send_status: "sent", _error: "" });
   });
 
-  it("writeStatus는 ensureStatusColumns 없이도 상태 컬럼을 새로 만들어 반영한다", async () => {
+  it("writeStatus creates and applies status columns even without ensureStatusColumns", async () => {
     await client.writeStatus("sheet-1", "customers", [
       { rowIndex: 2, sendStatus: "skipped_duplicate" },
     ]);
@@ -159,46 +159,46 @@ describe("InMemorySheetClient", () => {
     expect(rows[0]?.values._send_status).toBe("skipped_duplicate");
   });
 
-  it("존재하지 않는 sheetId를 읽으면 등록 방법을 안내하는 에러를 던진다", async () => {
+  it("reading a nonexistent sheetId throws an error explaining how to register it", async () => {
     await expect(client.readConfig("no-such-sheet")).rejects.toThrow(
-      /loadSheet\(sheetId, fixture\)로 먼저 등록/,
+      /Register it first with loadSheet\(sheetId, fixture\)/,
     );
   });
 
-  it("존재하지 않는 tab을 읽으면 어떤 키를 추가해야 하는지 안내하는 에러를 던진다", async () => {
+  it("reading a nonexistent tab throws an error explaining which key to add", async () => {
     await expect(client.readRows("sheet-1", "no-such-tab")).rejects.toThrow(
-      /tabs에 'no-such-tab' 키를 추가/,
+      /Add a 'no-such-tab' key to the fixture's tabs/,
     );
   });
 
-  it("존재하지 않는 rowIndex로 writeStatus를 호출하면 명시적으로 에러를 던진다", async () => {
+  it("calling writeStatus with a nonexistent rowIndex throws an explicit error", async () => {
     await expect(
       client.writeStatus("sheet-1", "customers", [{ rowIndex: 999, sendStatus: "sent" }]),
-    ).rejects.toThrow(/rowIndex 999가 없습니다/);
+    ).rejects.toThrow(/has no rowIndex 999/);
   });
 
-  it("writeStatus는 all-or-nothing이다 — 배치 중 하나라도 rowIndex가 없으면 앞선 행도 반영되지 않는다", async () => {
+  it("writeStatus is all-or-nothing — if any rowIndex in the batch is missing, earlier rows are not applied either", async () => {
     await expect(
       client.writeStatus("sheet-1", "customers", [
         { rowIndex: 2, sendStatus: "sent", messageId: "should-not-apply" },
         { rowIndex: 999, sendStatus: "sent" },
       ]),
-    ).rejects.toThrow(/rowIndex 999가 없습니다/);
+    ).rejects.toThrow(/has no rowIndex 999/);
 
     const rows = await client.readRows("sheet-1", "customers");
-    // 배치 전체가 실패했으므로 rowIndex 2도 status 컬럼이 생기지 않아야 한다
+    // Since the whole batch failed, rowIndex 2 should not get status columns either
     expect(rows[0]?.values._send_status).toBeUndefined();
   });
 
-  it("loadSheet으로 시트를 추가 등록할 수 있다", async () => {
+  it("a sheet can be additionally registered with loadSheet", async () => {
     client.loadSheet("sheet-2", simpleFixture());
     const rows = await client.readRows("sheet-2", "customers");
     expect(rows).toHaveLength(2);
   });
 });
 
-describe("fixtures/sheets/collections.json (SPEC §4-3 수금 안내)", () => {
-  it("loadFixtureFile로 로드해 InMemorySheetClient에 등록하고 필터/유니코드 값을 읽을 수 있다", async () => {
+describe("fixtures/sheets/collections.json (SPEC §4-3 collection notice)", () => {
+  it("loading via loadFixtureFile and registering with InMemorySheetClient allows reading filter/unicode values", async () => {
     const fixture = loadFixtureFile(COLLECTIONS_FIXTURE_PATH);
     const client = new InMemorySheetClient({ [fixture.sheetId]: fixture });
 
@@ -213,21 +213,21 @@ describe("fixtures/sheets/collections.json (SPEC §4-3 수금 안내)", () => {
     expect(unpaidRows.length).toBeGreaterThan(0);
     expect(unpaidRows.length).toBeLessThan(rows.length);
 
-    // 타갈로그/영어 혼용 값이 깨지지 않고 그대로 유지되는지 확인
+    // Verify that mixed Tagalog/English values remain intact without corruption
     const first = rows[0];
     expect(first?.values.notes).toContain("bayaran");
     expect(config.body_template).toContain("po,");
   });
 });
 
-describe("fixtures/sheets/large-1000.json (T7 성능 회귀 가드용, scripts/genLargeFixture.ts 생성)", () => {
-  it("loadFixtureFile로 로드되고 1000행이 스키마를 만족한다 (생성기 드리프트 감지)", async () => {
+describe("fixtures/sheets/large-1000.json (for T7 performance regression guard, generated by scripts/genLargeFixture.ts)", () => {
+  it("loads via loadFixtureFile and 1000 rows satisfy the schema (detects generator drift)", async () => {
     const fixture = loadFixtureFile(LARGE_FIXTURE_PATH);
     const client = new InMemorySheetClient({ [fixture.sheetId]: fixture });
 
     const rows = await client.readRows(fixture.sheetId, fixture.notifyConfig.data_tab ?? "");
     expect(rows).toHaveLength(1000);
-    // 실발송 안전장치가 뚫려도 실제 수신자에게 닿지 않도록 RFC 2606 예약 도메인만 써야 한다
+    // Even if the live-send safeguard is breached, only RFC 2606 reserved domains should be used so real recipients are never reached
     for (const row of rows) {
       expect(row.values.email).toMatch(/@example\.invalid$/);
     }

@@ -1,5 +1,5 @@
-// GoogleSheetClient 계약 테스트 — 실제 네트워크 호출 없이 SheetsApiLike를 목으로 주입해
-// range 문자열/요청 바디 형태를 검증한다 (docs/ADVERSARIAL_REVIEW_002.md AR-007, AR-008).
+// GoogleSheetClient contract tests — inject SheetsApiLike as a mock instead of making real
+// network calls, and verify the shape of range strings/request bodies (docs/ADVERSARIAL_REVIEW_002.md AR-007, AR-008).
 import { describe, expect, it, vi } from "vitest";
 import { GoogleSheetClient } from "../src/adapters/googleSheetClient.js";
 import type { SheetsApiLike } from "../src/adapters/googleSheetClient.js";
@@ -17,8 +17,8 @@ function makeSheetsApiMock(getValues: unknown[][] | null = null): SheetsApiLike 
 }
 
 describe("GoogleSheetClient", () => {
-  describe("탭 이름 A1 인용 (AR-007)", () => {
-    it("readRows는 탭 이름을 작은따옴표로 인용해서 range를 만든다", async () => {
+  describe("quoting tab names for A1 notation (AR-007)", () => {
+    it("readRows quotes the tab name with single quotes when building the range", async () => {
       const sheetsApi = makeSheetsApiMock([["name"], ["Juan"]]);
       const client = new GoogleSheetClient({ sheetsApi });
 
@@ -30,7 +30,7 @@ describe("GoogleSheetClient", () => {
       });
     });
 
-    it("탭 이름에 작은따옴표가 있으면 ''로 이스케이프한다", async () => {
+    it("escapes a single quote in the tab name as ''", async () => {
       const sheetsApi = makeSheetsApiMock([["name"]]);
       const client = new GoogleSheetClient({ sheetsApi });
 
@@ -42,7 +42,7 @@ describe("GoogleSheetClient", () => {
       });
     });
 
-    it("ensureStatusColumns/writeStatus도 인용된 탭 이름으로 range를 만든다", async () => {
+    it("ensureStatusColumns/writeStatus also build ranges with quoted tab names", async () => {
       const sheetsApi = makeSheetsApiMock([
         ["name", "_send_status", "_sent_at", "_message_id", "_error"],
       ]);
@@ -56,7 +56,7 @@ describe("GoogleSheetClient", () => {
   });
 
   describe("ensureStatusColumns (AR-008)", () => {
-    it("상태 컬럼 4개가 이미 있으면 update를 호출하지 않는다", async () => {
+    it("does not call update when all 4 status columns already exist", async () => {
       const sheetsApi = makeSheetsApiMock([
         ["name", "_send_status", "_sent_at", "_message_id", "_error"],
       ]);
@@ -67,7 +67,7 @@ describe("GoogleSheetClient", () => {
       expect(sheetsApi.spreadsheets.values.update).not.toHaveBeenCalled();
     });
 
-    it("상태 컬럼이 없으면 헤더 끝(열 개수만큼 뒤)에 4개를 한 번에 추가한다", async () => {
+    it("adds all 4 columns at once, after the header (past the last existing column), when none exist", async () => {
       const sheetsApi = makeSheetsApiMock([["name", "email"]]);
       const client = new GoogleSheetClient({ sheetsApi });
 
@@ -81,7 +81,7 @@ describe("GoogleSheetClient", () => {
       });
     });
 
-    it("일부 상태 컬럼만 없으면 없는 것만 추가한다", async () => {
+    it("adds only the missing status columns when some already exist", async () => {
       const sheetsApi = makeSheetsApiMock([["name", "_send_status", "_sent_at"]]);
       const client = new GoogleSheetClient({ sheetsApi });
 
@@ -98,7 +98,7 @@ describe("GoogleSheetClient", () => {
   describe("writeStatus (AR-008)", () => {
     const HEADER = ["name", "_send_status", "_sent_at", "_message_id", "_error"];
 
-    it("빈 updates 배열이면 Sheets API를 전혀 호출하지 않는다", async () => {
+    it("does not call the Sheets API at all when the updates array is empty", async () => {
       const sheetsApi = makeSheetsApiMock(null);
       const client = new GoogleSheetClient({ sheetsApi });
 
@@ -108,7 +108,7 @@ describe("GoogleSheetClient", () => {
       expect(sheetsApi.spreadsheets.values.batchUpdate).not.toHaveBeenCalled();
     });
 
-    it("결측 필드(sentAt/messageId/error)는 batchUpdate 요청에 아예 포함되지 않는다", async () => {
+    it("missing fields (sentAt/messageId/error) are not included in the batchUpdate request at all", async () => {
       const sheetsApi = makeSheetsApiMock([HEADER]);
       const client = new GoogleSheetClient({ sheetsApi });
 
@@ -122,7 +122,7 @@ describe("GoogleSheetClient", () => {
       ]);
     });
 
-    it("전체 필드가 있으면 4개 셀 전부 batchUpdate에 담는다", async () => {
+    it("puts all 4 cells into batchUpdate when every field is present", async () => {
       const sheetsApi = makeSheetsApiMock([HEADER]);
       const client = new GoogleSheetClient({ sheetsApi });
 
@@ -144,7 +144,7 @@ describe("GoogleSheetClient", () => {
       ]);
     });
 
-    it("null 필드는 빈 문자열로 명시적으로 지운다(undefined=건드리지 않음과 구분, AR-014)", async () => {
+    it("null fields are explicitly cleared to empty string (distinct from undefined = leave untouched, AR-014)", async () => {
       const sheetsApi = makeSheetsApiMock([HEADER]);
       const client = new GoogleSheetClient({ sheetsApi });
 
@@ -167,22 +167,22 @@ describe("GoogleSheetClient", () => {
       ]);
     });
 
-    it("상태 컬럼이 헤더에 없으면 ensureStatusColumns를 먼저 호출하라는 에러를 던진다", async () => {
+    it("throws an error telling you to call ensureStatusColumns first when a status column is missing from the header", async () => {
       const sheetsApi = makeSheetsApiMock([["name", "email"]]);
       const client = new GoogleSheetClient({ sheetsApi });
 
       await expect(
         client.writeStatus("sheet-1", "customers", [{ rowIndex: 2, sendStatus: "sent" }]),
-      ).rejects.toThrow(/ensureStatusColumns를 먼저 호출/);
+      ).rejects.toThrow(/Call ensureStatusColumns first/);
     });
   });
 
   describe("readConfig", () => {
-    it("notify_config!A:B 범위를 읽어 키-값 record로 만든다", async () => {
+    it("reads the notify_config!A:B range into a key-value record", async () => {
       const sheetsApi = makeSheetsApiMock([
         ["data_tab", "customers"],
         ["channel", "email"],
-        ["", "무시되는 빈 키"],
+        ["", "ignored empty key"],
       ]);
       const client = new GoogleSheetClient({ sheetsApi });
 
@@ -196,13 +196,13 @@ describe("GoogleSheetClient", () => {
     });
   });
 
-  describe("생성자", () => {
-    it("sheetsApi를 주입하지 않고 GOOGLE_SERVICE_ACCOUNT_JSON도 없으면 수정 방법이 담긴 에러를 던진다", () => {
+  describe("constructor", () => {
+    it("throws an error with fix instructions when sheetsApi isn't injected and GOOGLE_SERVICE_ACCOUNT_JSON isn't set either", () => {
       const original = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
       delete process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
       try {
         expect(() => new GoogleSheetClient()).toThrow(
-          /GOOGLE_SERVICE_ACCOUNT_JSON 환경변수가 없습니다/,
+          /GOOGLE_SERVICE_ACCOUNT_JSON environment variable is not set/,
         );
       } finally {
         if (original !== undefined) process.env.GOOGLE_SERVICE_ACCOUNT_JSON = original;
@@ -211,12 +211,13 @@ describe("GoogleSheetClient", () => {
   });
 
   describe("timeout (docs/ADVERSARIAL_REVIEW_004.md AR-023)", () => {
-    it("readRows: 응답이 영영 안 오는 Sheets API 호출도 timeoutMs 안에 명확한 에러로 끝난다", async () => {
+    it("readRows: even a Sheets API call whose response never comes back ends with a clear error within timeoutMs", async () => {
       const sheetsApi: SheetsApiLike = {
         spreadsheets: {
           values: {
-            // signal 인자가 없는 우리 SheetsApiLike 인터페이스 특성상, 목이 스스로 끝나지 않는 한
-            // 절대 안 끝난다 — withTimeout() race가 없으면 이 테스트 자체가 멈춘다.
+            // Since our SheetsApiLike interface has no signal argument, the mock never finishes
+            // unless it finishes on its own — without the withTimeout() race, this test itself
+            // would hang.
             get: vi.fn().mockImplementation(() => new Promise(() => {})),
             update: vi.fn(),
             batchUpdate: vi.fn(),
@@ -225,12 +226,10 @@ describe("GoogleSheetClient", () => {
       };
       const client = new GoogleSheetClient({ sheetsApi, timeoutMs: 20 });
 
-      await expect(client.readRows("sheet-1", "customers")).rejects.toThrow(
-        /타임아웃 처리했습니다/,
-      );
+      await expect(client.readRows("sheet-1", "customers")).rejects.toThrow(/treated as a timeout/);
     });
 
-    it("writeStatus: batchUpdate가 영영 안 끝나도 timeoutMs 안에 명확한 에러로 끝난다", async () => {
+    it("writeStatus: even if batchUpdate never finishes, it ends with a clear error within timeoutMs", async () => {
       const sheetsApi: SheetsApiLike = {
         spreadsheets: {
           values: {
@@ -246,7 +245,7 @@ describe("GoogleSheetClient", () => {
 
       await expect(
         client.writeStatus("sheet-1", "customers", [{ rowIndex: 2, sendStatus: "sent" }]),
-      ).rejects.toThrow(/타임아웃 처리했습니다/);
+      ).rejects.toThrow(/treated as a timeout/);
     });
   });
 });

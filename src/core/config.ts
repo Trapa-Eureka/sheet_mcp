@@ -1,6 +1,6 @@
-// notify_config 탭(SheetClient.readConfig의 Record<string, string>)을 검증된 NotifyConfig로 파싱한다.
-// 시트 값은 외부 입력이므로 경계에서 zod로 검증한다 (CLAUDE.md 컨벤션).
-// 설계: docs/DESIGN.md §2(시트 규약), 태스크: docs/TASKS.md T1.
+// Parses the notify_config tab (SheetClient.readConfig's Record<string, string>) into a validated NotifyConfig.
+// Sheet values are external input, so they are validated with zod at the boundary (CLAUDE.md convention).
+// Design: docs/DESIGN.md §2 (sheet convention), task: docs/TASKS.md T1.
 
 import { z } from "zod";
 
@@ -24,7 +24,7 @@ export interface NotifyConfig {
   filterValue?: string;
 }
 
-/** 에이전트가 에러 메시지만 보고 자가 수정할 수 있도록 "무엇이 왜 + 어떻게 고치나"를 담는다 (CLAUDE.md 컨벤션) */
+/** Carries "what's wrong + why" and "how to fix it" so an agent can self-correct from the error message alone (CLAUDE.md convention) */
 export class ConfigParseError extends Error {
   constructor(message: string) {
     super(message);
@@ -42,7 +42,7 @@ const rawConfigSchema = z.record(z.string(), z.string()).superRefine((raw, ctx) 
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: [key],
-        message: `notify_config 탭에 '${key}' 키가 없습니다. notify_config 탭에 ${key}=<값> 행을 추가하세요.`,
+        message: `The '${key}' key is missing from the notify_config tab. Add a ${key}=<value> row to the notify_config tab.`,
       });
     }
   }
@@ -54,13 +54,13 @@ const rawConfigSchema = z.record(z.string(), z.string()).superRefine((raw, ctx) 
         code: z.ZodIssueCode.custom,
         path: ["channel"],
         message:
-          "notify_config 탭의 channel=sms는 v0.1에서 지원하지 않습니다 (SMS는 v0.2에서 SemaphoreSmsProvider로 추가 예정, docs/SPEC.md 로드맵 참고). notify_config 탭에서 channel=email로 바꾸세요.",
+          "channel=sms in the notify_config tab is not supported in v0.1 (SMS is planned to be added via SemaphoreSmsProvider in v0.2 — see the roadmap in docs/SPEC.md). Change channel=email in the notify_config tab.",
       });
     } else if (channel !== "email") {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["channel"],
-        message: `notify_config 탭의 channel 값 '${channel}'은 지원하지 않습니다. v0.1은 channel=email만 허용합니다. notify_config 탭에서 channel=email로 바꾸세요.`,
+        message: `The channel value '${channel}' in the notify_config tab is not supported. v0.1 supports only channel=email. Change channel=email in the notify_config tab.`,
       });
     }
   }
@@ -72,22 +72,22 @@ const rawConfigSchema = z.record(z.string(), z.string()).superRefine((raw, ctx) 
       code: z.ZodIssueCode.custom,
       path: ["filter_column"],
       message:
-        "notify_config 탭의 filter_column과 filter_value는 함께 설정해야 합니다. 필터를 쓰려면 두 키를 모두 추가하고, 안 쓰려면 둘 다 비우세요.",
+        "filter_column and filter_value in the notify_config tab must be set together. To use a filter, add both keys; to skip filtering, leave both empty.",
     });
   }
 });
 
-/** 검증 통과가 보장된 뒤에만 호출 — 결측이면 내부 로직 오류이므로 별도 에러로 구분한다 */
+/** Call only after validation has passed — if missing here, it's an internal logic error, so raise a distinct error */
 function required(value: string | undefined, key: string): string {
   if (value === undefined) {
     throw new ConfigParseError(
-      `내부 오류: parseNotifyConfig 검증을 통과했지만 '${key}' 값이 비어 있습니다. 버그를 리포트하세요.`,
+      `Internal error: parseNotifyConfig passed validation but the '${key}' value is empty. Please report this bug.`,
     );
   }
   return value;
 }
 
-/** filter_column/filter_value처럼 선택 키는 공백뿐이어도 "결측"으로 정규화한다 (원본 공백 문자열을 그대로 흘리지 않음) */
+/** For optional keys like filter_column/filter_value, normalize whitespace-only values to "missing" too (never leak the raw whitespace string through) */
 function optional(value: string | undefined): string | undefined {
   return isBlank(value) ? undefined : value;
 }

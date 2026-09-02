@@ -1,5 +1,7 @@
-// 임시 파일 DB로 SqliteSendLog를 검증한다 (파일 IO는 허용, 네트워크 아님 — docs/TESTING.md §1).
-// claim/commit/release + 소유권 토큰 + 만료 기반 수동 복구 + cursor 페이지네이션 배경:
+// Verifies SqliteSendLog against a temp file DB (file IO is allowed, it's not network —
+// docs/TESTING.md §1).
+// Background on claim/commit/release + ownership tokens + expiry-based manual recovery + cursor
+// pagination:
 // docs/ADVERSARIAL_REVIEW_003.md AR-011/AR-013/AR-015,
 // docs/ADVERSARIAL_REVIEW_003_RESOLUTION_GAPS.md GAP-001/002/003/006,
 // docs/ADVERSARIAL_REVIEW_003_STATUS_GAPS.md STATUS-GAP-001/002.
@@ -27,14 +29,14 @@ afterEach(() => {
   rmSync(tmpDir, { recursive: true, force: true });
 });
 
-/** claim() + commit()을 한 번에 — "이미 확정 발송된 행 하나"를 빠르게 만든다. */
+/** claim() + commit() in one go — quickly creates "one already-confirmed sent row". */
 function commitOne(log: SqliteSendLog, sheetId: string, rowKey: string, sentAt: string): void {
   const { token } = log.claim(sheetId, TAB, rowKey, HASH, sentAt);
   log.commit(sheetId, TAB, rowKey, HASH, token!, sentAt, undefined);
 }
 
 describe("SqliteSendLog", () => {
-  it("존재하지 않는 디렉터리 경로를 줘도 자동으로 만들고 DB 파일을 생성한다", () => {
+  it("creates the DB file and auto-creates the directory even if given a nonexistent directory path", () => {
     const nestedPath = join(tmpDir, "nested", "dir", "sendlog.db");
     const log = new SqliteSendLog(nestedPath);
     try {
@@ -44,7 +46,7 @@ describe("SqliteSendLog", () => {
     }
   });
 
-  it("claim 전에는 wasSent가 false다", () => {
+  it("wasSent is false before claiming", () => {
     const log = new SqliteSendLog(dbPath);
     try {
       expect(log.wasSent(SHEET, TAB, "CUST-001", HASH)).toBe(false);
@@ -53,7 +55,7 @@ describe("SqliteSendLog", () => {
     }
   });
 
-  it("claim은 처음엔 claimed=true+token, 같은 키로 다시 claim하면 claimed=false다(AR-011)", () => {
+  it("claim is claimed=true+token the first time; claiming the same key again is claimed=false (AR-011)", () => {
     const log = new SqliteSendLog(dbPath);
     try {
       const first = log.claim(SHEET, TAB, "CUST-001", HASH, CLAIMED_AT);
@@ -67,7 +69,7 @@ describe("SqliteSendLog", () => {
     }
   });
 
-  it("claim 직후(commit 전)에도 wasSent는 true다", () => {
+  it("wasSent is true even right after claim (before commit)", () => {
     const log = new SqliteSendLog(dbPath);
     try {
       log.claim(SHEET, TAB, "CUST-001", HASH, CLAIMED_AT);
@@ -78,8 +80,8 @@ describe("SqliteSendLog", () => {
   });
 
   it(
-    "GAP-001: claim 후 프로세스가 죽은 것처럼 commit/release를 전혀 안 부르면 " +
-      "list()에 sendStatus='claimed'로(sent로 둔갑하지 않고) 보인다",
+    "GAP-001: if commit/release are never called after claim (as if the process died), " +
+      "list() shows sendStatus='claimed' (not mislabeled as sent)",
     () => {
       const log = new SqliteSendLog(dbPath);
       try {
@@ -95,7 +97,7 @@ describe("SqliteSendLog", () => {
     },
   );
 
-  it("commit 후에는 list에 sendStatus='sent'+messageId가 반영된 최종 기록이 남는다", () => {
+  it("after commit, list shows the final record with sendStatus='sent'+messageId reflected", () => {
     const log = new SqliteSendLog(dbPath);
     try {
       const { token } = log.claim(SHEET, TAB, "CUST-001", HASH, CLAIMED_AT);
@@ -116,30 +118,30 @@ describe("SqliteSendLog", () => {
     }
   });
 
-  it("claim 없이 commit하면 명시적으로 에러를 던진다", () => {
+  it("committing without claiming throws an explicit error", () => {
     const log = new SqliteSendLog(dbPath);
     try {
       expect(() =>
         log.commit(SHEET, TAB, "CUST-001", HASH, "no-such-token", CLAIMED_AT, "msg-1"),
-      ).toThrow(/claim되지 않았거나 token이 일치하지 않/);
+      ).toThrow(/was not claimed, whose token didn't match/);
     } finally {
       log.close();
     }
   });
 
-  it("token이 일치하지 않으면 commit이 거부된다(GAP-001)", () => {
+  it("commit is rejected when the token doesn't match (GAP-001)", () => {
     const log = new SqliteSendLog(dbPath);
     try {
       log.claim(SHEET, TAB, "CUST-001", HASH, CLAIMED_AT);
       expect(() =>
         log.commit(SHEET, TAB, "CUST-001", HASH, "wrong-token", CLAIMED_AT, "msg-1"),
-      ).toThrow(/claim되지 않았거나 token이 일치하지 않/);
+      ).toThrow(/was not claimed, whose token didn't match/);
     } finally {
       log.close();
     }
   });
 
-  it("release(올바른 token) 후에는 wasSent가 다시 false가 되고, 같은 키로 재claim할 수 있다", () => {
+  it("after release(correct token), wasSent becomes false again and the same key can be re-claimed", () => {
     const log = new SqliteSendLog(dbPath);
     try {
       const { token } = log.claim(SHEET, TAB, "CUST-001", HASH, CLAIMED_AT);
@@ -152,7 +154,7 @@ describe("SqliteSendLog", () => {
     }
   });
 
-  it("release(잘못된 token)는 조용히 무시하고 기존 claim을 지우지 않는다(GAP-001)", () => {
+  it("release(wrong token) is silently ignored and doesn't delete the existing claim (GAP-001)", () => {
     const log = new SqliteSendLog(dbPath);
     try {
       log.claim(SHEET, TAB, "CUST-001", HASH, CLAIMED_AT);
@@ -164,8 +166,9 @@ describe("SqliteSendLog", () => {
   });
 
   it(
-    "GAP-009(재검증 중 발견): token이 맞아도 이미 commit된(sent) 기록은 release()로 지워지지 " +
-      "않는다 — 확정 발송 기록이 사라져 재발송 가능해지는 사고를 막는다",
+    "GAP-009 (found during re-verification): even with a matching token, a record already " +
+      "committed (sent) is not deleted by release() — this prevents an accident where a confirmed " +
+      "send record disappears and becomes eligible for a duplicate send",
     () => {
       const log = new SqliteSendLog(dbPath);
       try {
@@ -185,8 +188,8 @@ describe("SqliteSendLog", () => {
   );
 
   it(
-    "GAP-009(재검증 중 발견): 같은 token으로 commit()을 두 번 부르면 두 번째는 에러 — " +
-      "claimed→sent 전이는 한 번만 일어나야 한다",
+    "GAP-009 (found during re-verification): calling commit() twice with the same token errors " +
+      "the second time — the claimed→sent transition must happen exactly once",
     () => {
       const log = new SqliteSendLog(dbPath);
       try {
@@ -194,7 +197,7 @@ describe("SqliteSendLog", () => {
         log.commit(SHEET, TAB, "CUST-001", HASH, token!, CLAIMED_AT, "msg-1");
 
         expect(() => log.commit(SHEET, TAB, "CUST-001", HASH, token!, CLAIMED_AT, "msg-2")).toThrow(
-          /claim되지 않았거나 token이 일치하지 않거나 이미 commit된/,
+          /was not claimed, whose token didn't match, or which was already committed/,
         );
         expect(log.list(SHEET).entries[0]?.messageId).toBe("msg-1");
       } finally {
@@ -203,8 +206,8 @@ describe("SqliteSendLog", () => {
     },
   );
 
-  describe("forceReleaseStaleClaim (GAP-001 수동 복구)", () => {
-    it("아직 만료 기준보다 젊은 claim은 회수하지 않는다", () => {
+  describe("forceReleaseStaleClaim (GAP-001 manual recovery)", () => {
+    it("does not reclaim a claim that is still younger than the expiry threshold", () => {
       const log = new SqliteSendLog(dbPath);
       try {
         const recentClaimedAt = new Date(Date.now() - 1000).toISOString();
@@ -219,7 +222,7 @@ describe("SqliteSendLog", () => {
       }
     });
 
-    it("만료 기준보다 오래된(commit 안 된) claim은 회수하고 재claim을 허용한다", () => {
+    it("reclaims an (uncommitted) claim older than the expiry threshold and allows re-claiming", () => {
       const log = new SqliteSendLog(dbPath);
       try {
         const oldClaimedAt = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
@@ -233,7 +236,7 @@ describe("SqliteSendLog", () => {
       }
     });
 
-    it("이미 commit된(sent) claim은 아무리 오래됐어도 회수하지 않는다", () => {
+    it("never reclaims an already-committed (sent) claim, no matter how old", () => {
       const log = new SqliteSendLog(dbPath);
       try {
         const oldClaimedAt = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
@@ -250,7 +253,7 @@ describe("SqliteSendLog", () => {
     });
   });
 
-  it("templateHash가 다르면 같은 행이라도 별도 claim으로 허용한다 (템플릿 수정 후 재발송)", () => {
+  it("allows a separate claim for the same row when templateHash differs (resend after template edit)", () => {
     const log = new SqliteSendLog(dbPath);
     try {
       expect(log.claim(SHEET, TAB, "CUST-001", "hash-v1", CLAIMED_AT).claimed).toBe(true);
@@ -261,8 +264,8 @@ describe("SqliteSendLog", () => {
     }
   });
 
-  describe("list — 최신순 + cursor 페이지네이션 (GAP-006)", () => {
-    it("199/200/201건 경계에서 hasMore가 정확하다(근사치 아님)", () => {
+  describe("list — newest-first + cursor pagination (GAP-006)", () => {
+    it("hasMore is exact (not approximate) at the 199/200/201-record boundary", () => {
       const log = new SqliteSendLog(dbPath);
       try {
         for (let i = 0; i < 199; i += 1) commitOne(log, SHEET, `R-${String(i)}`, `t${String(i)}`);
@@ -297,7 +300,7 @@ describe("SqliteSendLog", () => {
       }
     });
 
-    it("nextCursor로 두 페이지 이상을 중복·누락 없이 순회할 수 있다", () => {
+    it("can page through two or more pages via nextCursor without duplicates or gaps", () => {
       const log = new SqliteSendLog(dbPath);
       try {
         for (let i = 0; i < 5; i += 1) commitOne(log, SHEET, `R-${String(i)}`, `t${String(i)}`);
@@ -320,20 +323,18 @@ describe("SqliteSendLog", () => {
       }
     });
 
-    it("잘못된 cursor 값은 명시적으로 에러를 던진다", () => {
+    it("an invalid cursor value throws an explicit error", () => {
       const log = new SqliteSendLog(dbPath);
       try {
-        expect(() => log.list(SHEET, { cursor: "not-a-number" })).toThrow(
-          /cursor 값이 올바르지 않습니다/,
-        );
+        expect(() => log.list(SHEET, { cursor: "not-a-number" })).toThrow(/invalid cursor value/);
       } finally {
         log.close();
       }
     });
 
     it(
-      "재검증 중 발견: limit이 음수여도 SQLite의 'LIMIT -1=무제한' 의미로 새지 않고 " +
-        "최소 1건으로 취급한다",
+      "found during re-verification: a negative limit doesn't leak through as SQLite's " +
+        "'LIMIT -1 = unlimited' meaning, and is instead treated as a minimum of 1 record",
       () => {
         const log = new SqliteSendLog(dbPath);
         try {
@@ -346,7 +347,7 @@ describe("SqliteSendLog", () => {
     );
   });
 
-  it("DB를 닫고 같은 파일 경로로 다시 열어도 기록이 유지된다 (영속성)", () => {
+  it("records persist across closing the DB and reopening the same file path (persistence)", () => {
     const first = new SqliteSendLog(dbPath);
     commitOne(first, SHEET, "CUST-001", CLAIMED_AT);
     first.close();
@@ -360,7 +361,7 @@ describe("SqliteSendLog", () => {
     }
   });
 
-  it("dbPath 생략 시 SEND_LOG_PATH 환경변수를 사용한다", () => {
+  it("uses the SEND_LOG_PATH environment variable when dbPath is omitted", () => {
     const original = process.env.SEND_LOG_PATH;
     process.env.SEND_LOG_PATH = dbPath;
     try {
@@ -378,15 +379,15 @@ describe("SqliteSendLog", () => {
   });
 
   it(
-    "같은 DB 파일을 보는 별도 SqliteSendLog 인스턴스끼리도 claim이 서로를 막는다 " +
-      "(AR-011 — 서로 다른 프로세스가 같은 파일을 열었을 때의 동시 실행을 흉내낸 시나리오)",
+    "separate SqliteSendLog instances looking at the same DB file also block each other's claims " +
+      "(AR-011 — a scenario mimicking concurrent execution when different processes open the same file)",
     () => {
       const first = new SqliteSendLog(dbPath);
       const second = new SqliteSendLog(dbPath);
       try {
         expect(first.claim(SHEET, TAB, "CUST-001", HASH, CLAIMED_AT).claimed).toBe(true);
-        // second는 별도 인스턴스(별도 프로세스를 흉내)지만 같은 파일의 UNIQUE 제약을 공유하므로
-        // 똑같은 키를 claim하려 하면 반드시 실패해야 한다.
+        // second is a separate instance (mimicking a separate process), but since it shares the
+        // same file's UNIQUE constraint, claiming the exact same key must fail.
         expect(second.claim(SHEET, TAB, "CUST-001", HASH, CLAIMED_AT).claimed).toBe(false);
       } finally {
         first.close();
@@ -395,15 +396,15 @@ describe("SqliteSendLog", () => {
     },
   );
 
-  it("close()는 멱등이다 — 두 번 불러도 에러 없음(GAP-008)", () => {
+  it("close() is idempotent — calling it twice throws no error (GAP-008)", () => {
     const log = new SqliteSendLog(dbPath);
     log.close();
     expect(() => log.close()).not.toThrow();
   });
 
   it(
-    "같은 파일을 반복해서 열고 닫아도 자원이 누적되지 않는다(GAP-008 — 장수 프로세스에서 " +
-      "SendLog를 반복 생성·종료하는 상황을 흉내낸 회귀 가드)",
+    "resources don't accumulate from repeatedly opening and closing the same file (GAP-008 — a " +
+      "regression guard mimicking a long-lived process that repeatedly creates/tears down SendLog)",
     () => {
       for (let i = 0; i < 50; i += 1) {
         const log = new SqliteSendLog(dbPath);
@@ -412,7 +413,8 @@ describe("SqliteSendLog", () => {
         log.close();
       }
 
-      // 50번 반복 후에도 파일이 정상 열리고 모든 기록이 남아 있어야 한다(fd 고갈/손상 없음).
+      // Even after 50 iterations, the file must open normally with every record intact (no fd
+      // exhaustion or corruption).
       const verify = new SqliteSendLog(dbPath);
       try {
         expect(verify.list(SHEET, { limit: 100 }).entries).toHaveLength(50);
@@ -422,8 +424,8 @@ describe("SqliteSendLog", () => {
     },
   );
 
-  describe("v1(T6 record) → v2(claim/commit) 자동 마이그레이션 (STATUS-GAP-001)", () => {
-    /** T6 시절의 record() 전용 스키마 DB 파일을 직접 만든다 — 마이그레이션 입력 fixture. */
+  describe("v1 (T6 record) → v2 (claim/commit) automatic migration (STATUS-GAP-001)", () => {
+    /** Directly builds a DB file with the T6-era record()-only schema — a migration input fixture. */
     function createLegacyV1Db(path: string): Database.Database {
       const db = new Database(path);
       db.exec(`
@@ -443,7 +445,7 @@ describe("SqliteSendLog", () => {
       return db;
     }
 
-    it("이전 send_status='sent' 기록은 committed=1로 옮겨져 wasSent/claim이 재발송을 막는다", () => {
+    it("a previous send_status='sent' record is moved as committed=1, so wasSent/claim prevent a resend", () => {
       const legacy = createLegacyV1Db(dbPath);
       legacy
         .prepare(
@@ -474,12 +476,12 @@ describe("SqliteSendLog", () => {
       }
     });
 
-    it("이전 send_status='failed'/'skipped_duplicate' 기록은 옮기지 않아 재시도를 막지 않는다", () => {
+    it("previous send_status='failed'/'skipped_duplicate' records are not moved, so a retry isn't blocked", () => {
       const legacy = createLegacyV1Db(dbPath);
       legacy
         .prepare(
           `INSERT INTO send_log (sheet_id, tab, row_key, template_hash, send_status, sent_at, message_id, error)
-           VALUES (?, ?, ?, ?, 'failed', ?, NULL, 'provider 오류')`,
+           VALUES (?, ?, ?, ?, 'failed', ?, NULL, 'provider error')`,
         )
         .run(SHEET, TAB, "CUST-FAILED", HASH, "2026-08-01T00:00:00.000Z");
       legacy
@@ -501,7 +503,7 @@ describe("SqliteSendLog", () => {
       }
     });
 
-    it("마이그레이션 후 원본 v1 테이블은 지워지지 않고 send_log_v1_backup_*로 보존된다", () => {
+    it("after migration, the original v1 table is not dropped and is preserved as send_log_v1_backup_*", () => {
       const legacy = createLegacyV1Db(dbPath);
       legacy
         .prepare(
@@ -532,8 +534,8 @@ describe("SqliteSendLog", () => {
     });
 
     it(
-      "이전에 중단된 마이그레이션이 남긴 send_log_new 임시 테이블이 있으면 마이그레이션을 " +
-        "거부하고, 원본 send_log(v1)는 그대로 보존된다(트랜잭션 롤백)",
+      "if a send_log_new temp table left behind by a previously interrupted migration exists, " +
+        "migration is refused and the original send_log (v1) is preserved unchanged (transaction rollback)",
       () => {
         const legacy = createLegacyV1Db(dbPath);
         legacy
@@ -545,7 +547,7 @@ describe("SqliteSendLog", () => {
         legacy.exec(`CREATE TABLE send_log_new (leftover TEXT);`);
         legacy.close();
 
-        expect(() => new SqliteSendLog(dbPath)).toThrow(/SendLog 마이그레이션 실패/);
+        expect(() => new SqliteSendLog(dbPath)).toThrow(/SendLog migration failed/);
 
         const raw = new Database(dbPath);
         try {
@@ -559,7 +561,7 @@ describe("SqliteSendLog", () => {
       },
     );
 
-    it("v2(claim/commit) 스키마로 이미 만들어진 DB는 마이그레이션 없이 그대로 열린다", () => {
+    it("a DB already built with the v2 (claim/commit) schema opens as-is, with no migration", () => {
       const first = new SqliteSendLog(dbPath);
       const { token } = first.claim(SHEET, TAB, "CUST-001", HASH, CLAIMED_AT);
       first.commit(SHEET, TAB, "CUST-001", HASH, token!, CLAIMED_AT, "msg-1");
@@ -584,18 +586,18 @@ describe("SqliteSendLog", () => {
       }
     });
 
-    it("알 수 없는(v1도 v2도 아닌) send_log 스키마는 명시적으로 에러를 던진다", () => {
+    it("an unknown (neither v1 nor v2) send_log schema throws an explicit error", () => {
       const weird = new Database(dbPath);
       weird.exec(`CREATE TABLE send_log (id INTEGER PRIMARY KEY, whatever TEXT);`);
       weird.close();
 
-      expect(() => new SqliteSendLog(dbPath)).toThrow(/알려진 스키마.*일치하지 않습니다/);
+      expect(() => new SqliteSendLog(dbPath)).toThrow(/doesn't match a known schema/);
     });
   });
 
-  describe("forceReleaseStaleClaim의 olderThanMs 입력 검증 (STATUS-GAP-002)", () => {
+  describe("forceReleaseStaleClaim's olderThanMs input validation (STATUS-GAP-002)", () => {
     it.each([-1, NaN, Infinity, -Infinity, 1.5])(
-      "olderThanMs=%p는 어떤 claim도 지우지 않고 즉시 에러를 던진다",
+      "olderThanMs=%p throws immediately without deleting any claim",
       (invalid) => {
         const log = new SqliteSendLog(dbPath);
         try {
@@ -603,9 +605,9 @@ describe("SqliteSendLog", () => {
           log.claim(SHEET, TAB, "CUST-001", HASH, recentClaimedAt);
 
           expect(() => log.forceReleaseStaleClaim(SHEET, TAB, "CUST-001", HASH, invalid)).toThrow(
-            /olderThanMs 값이 올바르지 않습니다/,
+            /invalid olderThanMs value/,
           );
-          // 검증에 실패했으니 claim은 그대로 남아 있어야 한다.
+          // Since validation failed, the claim must remain intact.
           expect(log.wasSent(SHEET, TAB, "CUST-001", HASH)).toBe(true);
         } finally {
           log.close();
@@ -613,7 +615,7 @@ describe("SqliteSendLog", () => {
       },
     );
 
-    it("olderThanMs=0은 정수이자 0 이상이므로 유효한 값으로 허용된다", () => {
+    it("olderThanMs=0 is allowed as a valid value, since it's an integer >= 0", () => {
       const log = new SqliteSendLog(dbPath);
       try {
         const oldClaimedAt = new Date(Date.now() - 1000).toISOString();

@@ -1,6 +1,7 @@
-// fixtures/sheets/large-1000.json 생성 스크립트 — SendPipeline 성능 회귀 가드용 (docs/TESTING.md §4, T7).
-// 결정론 유지를 위해 Math.random/Date.now를 쓰지 않고 인덱스 기반으로 값을 만든다.
-// 실행: npx tsx scripts/genLargeFixture.ts
+// Script that generates fixtures/sheets/large-1000.json — for the SendPipeline performance
+// regression guard (docs/TESTING.md §4, T7).
+// To stay deterministic, values are built from the index rather than Math.random/Date.now.
+// Run: npx tsx scripts/genLargeFixture.ts
 
 import { renameSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -16,7 +17,8 @@ function buildRow(index: number): Record<string, string> {
   return {
     customer_id: `CUST-${String(n).padStart(4, "0")}`,
     name: `Customer ${String(n)}`,
-    // .invalid는 RFC 2606 예약 도메인 — 실발송 안전장치가 뚫리더라도 실제 수신자에게 닿지 않는다
+    // .invalid is an RFC 2606 reserved domain — even if the live-send safeguard is breached,
+    // it won't reach a real recipient
     email: `customer${String(n)}@example.invalid`,
     amount: `₱${amount}`,
     due: `2026-09-${dueDay}`,
@@ -48,14 +50,16 @@ function main(): void {
   const outPath = fileURLToPath(new URL("../fixtures/sheets/large-1000.json", import.meta.url));
   const tmpPath = `${outPath}.tmp`;
 
-  // 생성기 자체의 스키마 드리프트를 잡기 위해, 쓰기 전에 fixture 로더와 동일한 zod 스키마로 검증한다
+  // Validate against the same zod schema the fixture loader uses, before writing, to catch
+  // schema drift in the generator itself
   const fixture = sheetFixtureFileSchema.parse(buildFixture());
 
-  // 직렬화 실패/중단 시에도 기존 커밋된 fixture가 잘린 채로 남지 않도록 임시 파일에 먼저 쓰고 rename한다
+  // Write to a temp file first and rename, so that even if serialization fails/is interrupted,
+  // the already-committed fixture doesn't end up left truncated
   writeFileSync(tmpPath, JSON.stringify(fixture, null, 2) + "\n", "utf-8");
   renameSync(tmpPath, outPath);
 
-  console.log(`생성 완료: ${outPath} (${String(ROW_COUNT)}행, 스키마 검증 통과)`);
+  console.log(`Done: ${outPath} (${String(ROW_COUNT)} rows, schema validation passed)`);
 }
 
 main();
