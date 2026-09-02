@@ -359,19 +359,42 @@ claude mcp add sheet-mcp --scope project -- npx tsx src/server.ts
 
 ### B. npm 패키지 (`npx sheet-mcp`) — clone 없이 쓰기
 
+**권장 방법: `claude mcp add`의 `-e`로 환경변수를 직접 넘긴다.** `.env` 파일을 따로 준비하지
+않는다.
+
 ```bash
-claude mcp add sheet-mcp -- npx -y sheet-mcp
+claude mcp add sheet-mcp --scope local \
+  -e GOOGLE_SERVICE_ACCOUNT_JSON=/절대/경로/service-account.json \
+  -e RESEND_API_KEY=re_xxxxx \
+  -e MAIL_FROM=notify@updates.본인도메인.com \
+  -- npx -y sheet-mcp
 ```
 
-레포를 clone하지 않고도 `npx`가 알아서 패키지를 받아 실행한다. 시크릿(`.env`)은 여전히 실행하는
-디렉터리에 직접 준비해야 한다 — 패키지 안에는 시크릿이 들어 있지 않다(§7).
+- **왜 `.env` 파일이 아니라 `-e`인가**: `npx -y sheet-mcp`는 Claude Code(부모 프로세스)가 어떤
+  디렉터리에서 실행 중이든 그 cwd를 그대로 물려받는다 — 레포를 clone해서 쓰는 A 경로와 달리
+  "이 디렉터리에 `.env`를 두면 된다"고 안내할 수 있는 고정된 위치가 없다. `-e`로 넘긴 값은
+  자식 프로세스의 `process.env`에 이미 들어간 채로 시작하고, `src/server.ts`의
+  `dotenv.config()`는 **이미 설정된 환경변수를 덮어쓰지 않으므로**(dotenv 기본 동작) `.env` 파일
+  유무와 무관하게 그대로 쓰인다.
+- **`GOOGLE_SERVICE_ACCOUNT_JSON`은 반드시 절대 경로로 넘긴다.** 이 값은 서비스 계정 키 JSON
+  **파일 경로**(내용이 아니다)이고, 상대 경로면 위와 같은 이유로 실제로 어느 디렉터리 기준인지
+  예측할 수 없다.
+- **`SEND_LOG_PATH`도 기본값이 상대 경로(`./data/sendlog.db`)다.** 지정하지 않으면 마찬가지로
+  예측 불가능한 위치에 DB 파일이 생긴다 — `-e SEND_LOG_PATH=/절대/경로/sendlog.db`로 명시하는
+  것을 권장한다.
+- **`--scope local`을 쓴다** (기본값). `--scope project`로 등록하면 `-e`로 넘긴 값이 레포에
+  커밋되는 `.mcp.json`에 그대로 저장돼 시크릿이 노출된다 — `local`/`user` 스코프는 그 사람의
+  로컬 설정에만 저장되고 git에 커밋되지 않는다.
+- 레포를 clone한 상태에서 A처럼 실행 디렉터리가 고정돼 있다면 기존의 `.env` 파일 방식도 여전히
+  동작한다(§7) — 다만 B 경로(npx)에서는 위 `-e` 방식을 우선 권장한다.
 
 > **아직 `npm publish`를 하지 않았다** (`docs/TASKS.md` T11~T13, `npm publish` 자체는 별도 승인
 > 필요 — 공개 레지스트리 노출은 되돌리기 어려운 동작이라 준비만 해 두고 실행은 보류한 상태).
 > 그 전까지 `npx sheet-mcp`/`npx -y sheet-mcp`는 레지스트리에 이 이름의 패키지가 없어 동작하지
 > **않는다**. 지금은 위 A(레포 clone) 방법만 실제로 쓸 수 있다. publish 이후에는 이 문단을 지운다.
 
-연결 확인은 Claude Code 안에서 `/mcp`. 시크릿은 `.mcp.json`에 넣지 않고 셸 환경/.env로 공급한다.
+연결 확인은 Claude Code 안에서 `/mcp`. 시크릿은 커밋되는 `.mcp.json`(project scope)에 평문으로
+넣지 않는다 — A는 셸 환경/.env로, B는 위처럼 `-e` + `local`/`user` 스코프로 공급한다.
 
 ## 9. 디렉터리 구조 (목표)
 
