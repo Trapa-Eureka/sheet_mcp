@@ -1,29 +1,29 @@
-# 적대적 검수 리포트 002
+# Adversarial Review Report 002
 
-- 검수일: 2026-09-01
-- 대상: T3 `GoogleSheetClient`, T4 템플릿 엔진, T5 알림 Provider 및 기존 코드와의 통합 영향
-- 기준 리비전: `b823a2d` (`login-flow`)
-- 이전 리포트: `docs/ADVERSARIAL_REVIEW_001.md`
-- 검수 방식: 설계·태스크·구현·테스트 대조, 경계값 재현, 품질 게이트·커버리지·의존성 감사 실행
-- 변경 원칙: 검수 중 제품 코드와 기존 문서는 변경하지 않음
+- Review date: 2026-09-01
+- Target: T3 `GoogleSheetClient`, T4 template engine, T5 notification provider, and their integration impact on existing code
+- Baseline revision: `b823a2d` (`login-flow`)
+- Previous report: `docs/ADVERSARIAL_REVIEW_001.md`
+- Review method: cross-checking design, tasks, implementation, and tests; reproducing boundary values; running quality gates, coverage, and dependency audit
+- Change policy: product code and existing documentation were not modified during the review
 
-## 1. 총평
+## 1. Overall Assessment
 
-T3~T5의 명시된 태스크 완료 기준과 `npm run check`는 충족됐다. Google 서비스 계정 키는 경계에서 검증되고, Resend는 주입된 mock fetch로 네트워크 없이 테스트되며, 템플릿 엔진과 Provider 테스트도 기본 성공·실패 경로를 다룬다. 이전 검수에서 지적한 설정 공백값, 의존성 취약점, Prettier 게이트 문제도 해소됐다.
+The stated completion criteria for T3~T5 and `npm run check` were satisfied. The Google service account key is validated at the boundary, Resend is tested without network access via an injected mock fetch, and the template engine and provider tests also cover the basic success and failure paths. The config blank-value, dependency vulnerability, and Prettier gate issues raised in the previous review have also been resolved.
 
-그러나 릴리스 관점에서는 차단 또는 선행 수정이 필요한 신규 문제 5건이 확인됐다. 특히 템플릿 키 문법이 문서의 시트 헤더 계약보다 좁아서 일부 플레이스홀더를 결측으로도 탐지하지 못하며, 이 상태로 T7 파이프라인을 구현하면 치환되지 않은 텍스트가 고객에게 발송될 수 있다.
+However, from a release standpoint, 5 new issues were identified that require blocking or upfront fixes. In particular, the template key syntax is narrower than the sheet header contract documented in the design, so some placeholders are not even detected as missing — and if the T7 pipeline is implemented in this state, un-substituted text could be sent to customers.
 
-## 2. 신규 발견 사항
+## 2. New Findings
 
-### AR-006 — 일반 시트 헤더를 템플릿 키로 인식하지 못하고 결측 탐지도 우회함
+### AR-006 — Common sheet headers are not recognized as template keys, bypassing missing-value detection
 
-- 심각도: 높음
-- 위치: `src/core/template.ts:6-7`
-- 근거:
-  - 정규식이 키를 `[A-Za-z0-9_]+`로 제한한다.
-  - `docs/DESIGN.md`는 헤더명이 템플릿 변수명이라고 규정하지만 ASCII 영숫자와 밑줄로 제한하지 않는다.
-  - 실제 Google Sheets 헤더에는 한글, 타갈로그 문자, 공백, 하이픈 등이 들어갈 수 있다.
-- 재현:
+- Severity: High
+- Location: `src/core/template.ts:6-7`
+- Basis:
+  - The regular expression restricts keys to `[A-Za-z0-9_]+`.
+  - `docs/DESIGN.md` stipulates that header names are template variable names, but does not restrict them to ASCII alphanumerics and underscores.
+  - Actual Google Sheets headers can contain Korean, Tagalog characters, spaces, hyphens, and more.
+- Repro:
 
 ```ts
 renderTemplate("{{고객명}} / {{customer-name}}", {
@@ -32,107 +32,107 @@ renderTemplate("{{고객명}} / {{customer-name}}", {
 });
 ```
 
-실제 결과:
+Actual result:
 
 ```json
-{"text":"{{고객명}} / {{customer-name}}","missing":[]}
+{ "text": "{{고객명}} / {{customer-name}}", "missing": [] }
 ```
 
-- 영향:
-  - 치환에 실패해도 `missing`이 비어 있어 T7의 행 단위 실패 처리가 작동하지 않는다.
-  - 미치환 플레이스홀더가 정상 메시지로 간주되어 고객에게 그대로 발송될 수 있다.
-  - 문서상 계약과 실제 허용 문법이 다르다.
-- 권고:
-  - `{{`와 `}}` 사이의 키를 문서화된 규칙에 따라 넓게 파싱하되 앞뒤 공백만 제거한다.
-  - 또는 허용 키를 ASCII 식별자로 제한한다면 `DESIGN.md`와 config/헤더 검증을 먼저 변경해 경계에서 거부한다.
-  - 한글 키, 하이픈 키, 공백 포함 키, 비ASCII 결측 키 테스트를 추가한다.
-  - T7 착수 전에 수정한다.
+- Impact:
+  - Even when substitution fails, `missing` is empty, so T7's per-row failure handling does not kick in.
+  - An un-substituted placeholder is treated as a normal message and could be sent to the customer as-is.
+  - The documented contract and the actual accepted syntax differ.
+- Recommendation:
+  - Parse the key between `{{` and `}}` broadly per the documented rule, trimming only leading/trailing whitespace.
+  - Alternatively, if allowed keys are to be restricted to ASCII identifiers, first change `DESIGN.md` and the config/header validation to reject such keys at the boundary.
+  - Add tests for Korean keys, hyphenated keys, keys containing spaces, and non-ASCII missing keys.
+  - Fix before starting T7.
 
-### AR-007 — Google Sheets 탭 이름을 A1 표기법에 맞게 인용하지 않음
+### AR-007 — Google Sheets tab names are not quoted per A1 notation
 
-- 심각도: 중간
-- 위치: `src/adapters/googleSheetClient.ts:120-125`, `141-149`, `160-165`, `195-217`
-- 근거:
-  - `range: tab`, `` `${tab}!1:1` ``, `` `${tab}!A2` `` 형태로 탭 이름을 직접 결합한다.
-  - A1 표기법에서 공백·작은따옴표·특수문자가 포함된 시트 이름은 작은따옴표 인용과 내부 작은따옴표 이스케이프가 필요하다.
-- 영향:
-  - `Customer Data`, `미수금 고객`, `Jin's Sheet` 같은 일반적인 탭 이름에서 읽기 또는 상태 쓰기가 실패할 수 있다.
-  - config의 `data_tab`이 외부 입력이므로 범위 구문과 결합할 때 모호성도 생긴다.
-- 권고:
-  - 모든 탭 이름을 하나의 A1 인용 함수로 통과시킨다. 내부 `'`는 `''`로 이스케이프한다.
-  - 읽기, 헤더 조회, 상태 컬럼 생성, batch update가 같은 함수를 사용하도록 한다.
-  - 공백, 작은따옴표, `!`가 포함된 탭 이름의 요청 range를 mock API로 검증한다.
+- Severity: Medium
+- Location: `src/adapters/googleSheetClient.ts:120-125`, `141-149`, `160-165`, `195-217`
+- Basis:
+  - Tab names are directly concatenated in forms such as `range: tab`, `` `${tab}!1:1` ``, and `` `${tab}!A2` ``.
+  - In A1 notation, sheet names containing spaces, single quotes, or special characters require single-quote quoting and internal single-quote escaping.
+- Impact:
+  - Reads or status writes could fail on common tab names such as `Customer Data`, `미수금 고객`, or `Jin's Sheet`.
+  - Since config's `data_tab` is external input, ambiguity also arises when combined with range syntax.
+- Recommendation:
+  - Route all tab names through a single A1-quoting function. Escape internal `'` as `''`.
+  - Ensure reads, header lookup, status column creation, and batch update all use the same function.
+  - Verify the request range against a mock API for tab names containing spaces, single quotes, and `!`.
 
-### AR-008 — Google 쓰기 경로가 완료 처리됐지만 검증되지 않음
+### AR-008 — The Google write path is marked complete but unverified
 
-- 심각도: 중간
-- 위치: `src/adapters/googleSheetClient.ts:154-225`, `scripts/smoke.ts:23-38`
-- 근거:
-  - `ensureStatusColumns`와 `writeStatus`는 실제 사용자 시트를 변경하는 핵심 경로다.
-  - T3에는 Google 어댑터 테스트가 하나도 없다.
-  - 현재 smoke 스크립트는 `readConfig`와 `readRows`만 호출하며 두 쓰기 메서드를 검증하지 않는다.
-- 영향:
-  - 잘못된 열 계산, 범위 인용, 누락 필드 보존, batchUpdate 요청 형태의 회귀가 typecheck와 현재 smoke를 모두 통과한다.
-  - "사용자 데이터 컬럼은 절대 수정하지 않는다"는 핵심 가드레일을 실제 어댑터에서 실행 가능한 검증으로 보장하지 못한다.
-- 판정:
-  - `docs/TASKS.md`가 네트워크 테스트 금지를 이유로 테스트를 작성하지 않도록 했지만, 이는 mock API 또는 주입 경계 기반 단위 테스트까지 금지해야 한다는 뜻은 아니다.
-- 권고:
-  - Sheets API 객체 또는 호출 함수를 주입 가능하게 만들고 네트워크 없는 계약 테스트를 작성한다.
-  - 최소한 생성되는 range와 request body, 결측 필드 미기록, 빈 updates 무호출을 검증한다.
-  - 수동 smoke에서 쓰기를 검증한다면 테스트 전용 시트와 복구 절차를 명시하고 명시적 confirm을 요구한다.
+- Severity: Medium
+- Location: `src/adapters/googleSheetClient.ts:154-225`, `scripts/smoke.ts:23-38`
+- Basis:
+  - `ensureStatusColumns` and `writeStatus` are the core paths that modify the actual user sheet.
+  - T3 has zero tests for the Google adapter.
+  - The current smoke script only calls `readConfig` and `readRows` and does not verify either write method.
+- Impact:
+  - Regressions in column-index calculation, range quoting, preservation of unaffected fields, or batchUpdate request shape all pass both typecheck and the current smoke test.
+  - The core safeguard that "user data columns must never be modified" is not backed by an executable verification in the actual adapter.
+- Verdict:
+  - `docs/TASKS.md` avoided writing tests on the grounds that network tests are prohibited, but this does not mean unit tests based on a mock API or an injection boundary should also be prohibited.
+- Recommendation:
+  - Make the Sheets API object or call function injectable and write network-free contract tests.
+  - At minimum, verify the generated range and request body, that missing fields are not written, and that no call occurs for empty updates.
+  - If writes are to be verified via manual smoke, specify a test-only sheet and a recovery procedure, and require explicit confirm.
 
-### AR-009 — T3 smoke가 실제 고객 행 전체를 로그에 노출할 수 있음
+### AR-009 — T3 smoke may expose entire real customer rows in logs
 
-- 심각도: 중간
-- 위치: `scripts/smoke.ts:38`
-- 현상:
-  - 실제 시트의 첫 번째 행 전체를 `console.log`로 출력한다.
-- 영향:
-  - 이름, 이메일, 미수금, 마감일, 메모 등 개인정보와 영업정보가 터미널 기록, CI 캡처, 세션 로그에 남을 수 있다.
-  - smoke는 사람 전용이지만 실제 시트를 사용하도록 설계되어 있어 위험이 현실적이다.
-- 권고:
-  - 기본 출력은 행 수, 컬럼명, rowIndex 등 비민감 메타데이터로 제한한다.
-  - 실제 값 출력은 별도의 명시적 debug 플래그가 있을 때만 허용하고 민감 컬럼을 마스킹한다.
+- Severity: Medium
+- Location: `scripts/smoke.ts:38`
+- Symptom:
+  - The entire first row of the actual sheet is output via `console.log`.
+- Impact:
+  - Personal and business information such as names, emails, receivables, due dates, and notes may remain in terminal history, CI captures, and session logs.
+  - Smoke is human-only, but since it is designed to use the actual sheet, the risk is real.
+- Recommendation:
+  - Limit default output to non-sensitive metadata such as row count, column names, and rowIndex.
+  - Allow output of actual values only behind a separate, explicit debug flag, and mask sensitive columns.
 
-### AR-010 — README 진행 상태가 다시 뒤처짐
+### AR-010 — README progress status has fallen behind again
 
-- 심각도: 낮음
-- 위치: `README.md`의 상태 섹션
-- 현상:
-  - README는 T0~T2 완료 및 T3 이후 TODO라고 기록한다.
-  - 실제 `docs/TASKS.md`와 Git 기록은 T3~T5 완료 상태다.
-- 영향:
-  - 신규 개발자나 에이전트가 구현 범위와 다음 착수 태스크를 잘못 판단할 수 있다.
-- 권고:
-  - 상태를 T0~T5 완료, T6 이후 TODO로 갱신한다.
-  - 수동 상태 문자열 대신 `docs/TASKS.md`만 진실의 원천으로 두는 방안도 검토한다.
+- Severity: Low
+- Location: README status section
+- Symptom:
+  - README records T0~T2 as complete and T3 onward as TODO.
+  - The actual `docs/TASKS.md` and Git history show T3~T5 as complete.
+- Impact:
+  - New developers or agents may misjudge the implementation scope and the next task to start.
+- Recommendation:
+  - Update the status to T0~T5 complete, T6 onward TODO.
+  - Also consider making `docs/TASKS.md` the sole source of truth instead of a manually maintained status string.
 
-## 3. 이전 리포트 추적
+## 3. Tracking of Previous Report
 
-| 기존 ID | 상태 | 검증 결과 |
+| Existing ID | Status | Verification Result |
 | --- | --- | --- |
-| AR-001 | 진행 중 | T3~T5 완료. T6~T10은 여전히 TODO이므로 실행 가능한 MCP 제품은 아님 |
-| AR-002 | 해소 | 선택 필터 공백값을 `undefined`로 정규화하며 회귀 테스트가 추가됨 |
-| AR-003 | 해소 | `googleapis`가 178로 갱신됐고 `npm audit --omit=dev` 취약점 0건 |
-| AR-004 | 해소 | `format:check`가 `npm run check`에 포함됐고 현재 통과 |
-| AR-005 | 재발 성격의 후속 발견 | 당시 상태 문구는 수정됐으나 T3~T5 완료 후 다시 낡음. AR-010으로 추적 |
+| AR-001 | In progress | T3~T5 complete. T6~T10 are still TODO, so it is not a runnable MCP product |
+| AR-002 | Resolved | Blank optional filter values are normalized to `undefined`, and a regression test has been added |
+| AR-003 | Resolved | `googleapis` has been updated to 178, and `npm audit --omit=dev` shows 0 vulnerabilities |
+| AR-004 | Resolved | `format:check` is included in `npm run check` and currently passes |
+| AR-005 | Follow-up finding, recurring in nature | The status text at that time was fixed, but has gone stale again after T3~T5 completion. Tracked as AR-010 |
 
-## 4. 검증 결과
+## 4. Verification Results
 
-### 품질 게이트
+### Quality gates
 
-`npm run check` 통과:
+`npm run check` passes:
 
-- TypeScript typecheck: 통과
-- ESLint: 통과
-- Prettier format check: 통과
-- Vitest: 테스트 파일 7개 통과
-- 테스트 케이스: 55개 통과, 실패 0개
-- 테스트 실행 중 실제 네트워크 호출 징후: 없음
+- TypeScript typecheck: pass
+- ESLint: pass
+- Prettier format check: pass
+- Vitest: 7 test files passed
+- Test cases: 55 passed, 0 failed
+- Signs of actual network calls during test execution: none
 
-### 커버리지
+### Coverage
 
-`npm test -- --coverage` 결과:
+Result of `npm test -- --coverage`:
 
 - `src/core/` statements: 96.07%
 - branches: 96%
@@ -140,44 +140,44 @@ renderTemplate("{{고객명}} / {{customer-name}}", {
 - lines: 96.07%
 - `template.ts`: 100%
 
-주의: coverage 설정은 `src/core/**`만 포함하므로 `GoogleSheetClient`, `ResendEmailProvider` 등 어댑터 커버리지는 위 수치에 반영되지 않는다.
+Note: the coverage configuration includes only `src/core/**`, so adapter coverage for `GoogleSheetClient`, `ResendEmailProvider`, etc. is not reflected in the figures above.
 
-### 의존성 보안
+### Dependency security
 
-`npm audit --omit=dev --json` 결과:
+Result of `npm audit --omit=dev --json`:
 
-- 총 취약점: 0
-- 프로덕션 의존성: 189
+- Total vulnerabilities: 0
+- Production dependencies: 189
 - high/critical: 0
 
-### 저장소 상태
+### Repository status
 
-- 검수 시작 당시 Git 작업 트리: 깨끗함
-- 기준 커밋: `b823a2d`
-- 검수 과정에서 제품 코드 변경 없음
+- Git working tree at the start of the review: clean
+- Baseline commit: `b823a2d`
+- No product code changes made during the review
 
-## 5. 확인된 강점
+## 5. Confirmed Strengths
 
-- 서비스 계정 키 파일은 zod로 필수 필드를 검증하고 오류에 수정 방법을 포함한다.
-- 서비스 계정 JSON이나 API 키가 저장소에 하드코딩되지 않았다.
-- Resend fetch를 주입해 테스트에서 실제 네트워크를 차단한다.
-- Resend의 HTTP 실패, 네트워크 실패, 비정상 성공 응답, 채널 불일치를 실패 결과로 처리한다.
-- SMS 스텁은 생성 즉시 v0.2 및 Sender ID 안내를 제공한다.
-- 템플릿 치환값의 `$&`, `$1`, `$$`가 특별 처리되지 않고 그대로 삽입된다.
-- 결측 키 중복 제거와 유니코드 값 치환은 결정론적으로 동작한다.
-- Google 상태 쓰기는 optional 필드가 `undefined`이면 해당 셀을 쓰지 않는 계약을 구현한다.
+- The service account key file is validated for required fields via zod, and errors include how to fix them.
+- No service account JSON or API key is hardcoded in the repository.
+- Resend fetch is injected, blocking actual network access in tests.
+- Resend's HTTP failures, network failures, abnormal success responses, and channel mismatches are all handled as failure results.
+- The SMS stub provides v0.2 and Sender ID guidance immediately upon creation.
+- `$&`, `$1`, and `$$` in template substitution values are inserted as-is without special handling.
+- Deduplication of missing keys and substitution of Unicode values behave deterministically.
+- The Google status write implements the contract that a cell is not written when an optional field is `undefined`.
 
-## 6. 조치 우선순위
+## 6. Remediation Priority
 
-1. AR-006 템플릿 키 계약 수정 및 회귀 테스트
-2. AR-007 A1 탭 이름 인용 공통화
-3. AR-008 Google 쓰기 경로 mock 계약 테스트 추가
-4. AR-009 smoke 출력 최소화·마스킹
-5. AR-010 README 상태 갱신
-6. 위 수정 후 T6, T7 진행
+1. AR-006 fix the template key contract and add regression tests
+2. AR-007 unify A1 tab-name quoting
+3. AR-008 add mock contract tests for the Google write path
+4. AR-009 minimize and mask smoke output
+5. AR-010 update README status
+6. Proceed with T6, T7 after the above fixes
 
-## 7. 추적 규칙
+## 7. Tracking Rules
 
-- 다음 적대적 검수는 `docs/ADVERSARIAL_REVIEW_003.md`로 기록한다.
-- 기존 리포트는 당시 상태의 감사 기록이므로 덮어쓰지 않는다.
-- 수정 커밋이나 태스크 설명에 발견 ID(`AR-006` 등)를 연결한다.
+- The next adversarial review is recorded as `docs/ADVERSARIAL_REVIEW_003.md`.
+- Existing reports are an audit record of the state at that time and must not be overwritten.
+- Link the finding ID (e.g., `AR-006`) in the fix commit or task description.

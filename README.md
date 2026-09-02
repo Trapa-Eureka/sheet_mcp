@@ -1,132 +1,134 @@
 # sheet_mcp
 
-구글 스프레드시트를 DB처럼 쓰는 필리핀 SME를 위한 **알림 자동 발송 MCP 서버**.
+An **automated notification-sending MCP server** for Philippine SMEs, using a Google Spreadsheet as a database.
 
-- 시트의 행 데이터를 읽어 템플릿에 머지하고, 수신자에게 알림을 발송한 뒤, 발송 상태를 시트에 다시 기록한다.
-- **v0.1 발송 채널은 이메일.** SMS(Semaphore 등 PH 게이트웨이)는 Sender ID 등록 이슈가 정리되는 대로 v0.2에서 어댑터로 추가한다. 채널은 처음부터 `NotificationProvider` 인터페이스 뒤에 두므로 SMS 추가 시 파이프라인 코드는 바뀌지 않는다.
-- MCP 자동화 코어의 공통 기능(시트 연동 → 알림 발송)을 검증하는 첫 번째 수직 절단(vertical slice)이다. 검증되면 코어에 편입한다.
+- It reads row data from a sheet, merges it into a template, sends a notification to the recipient, and writes the send status back to the sheet.
+- **The v0.1 sending channel is email.** SMS (via a Philippine gateway such as Semaphore) will be added as an adapter in v0.2, once the Sender ID registration issue is sorted out. The channel sits behind the `NotificationProvider` interface from the start, so the pipeline code won't change when SMS is added.
+- This is the first vertical slice validating the MCP automation core's shared capability (sheet integration → notification sending). Once validated, it will be folded into the core.
 
-## 주요 기능 (v0.1)
+## Key Features (v0.1)
 
-### MCP 도구 4종 (`docs/DESIGN.md` §5)
+### 4 MCP Tools (`docs/DESIGN.md` §5)
 
-| 도구                 | 하는 일                                                                        |
-| -------------------- | ------------------------------------------------------------------------------ |
-| `read_rows`          | notify_config 규약에 맞춰 대상 행을 읽어 반환 (필터 반영, 최대 200행 미리보기) |
-| `preview_messages`   | 템플릿이 렌더된 실제 메시지 목록 + 결측/중복 경고를 미리 본다. **발송 없음**   |
-| `send_notifications` | 확인 후 이메일 발송. 이중 안전장치(아래) 둘 다 없으면 dry-run 결과만 반환      |
-| `get_send_log`       | 발송 이력을 최신순 커서 페이지네이션으로 조회 (기본 200건, 최대 1000건)        |
+| Tool                 | What it does                                                                                           |
+| -------------------- | ------------------------------------------------------------------------------------------------------ |
+| `read_rows`          | Reads and returns target rows per the notify_config convention (filter applied, up to 200-row preview) |
+| `preview_messages`   | Previews the actual rendered message list + missing-value/duplicate warnings. **No sending.**          |
+| `send_notifications` | Sends email after confirmation. Without both safeguards below, returns only a dry-run result.          |
+| `get_send_log`       | Queries send history via cursor-based pagination, newest first (200 by default, 1000 max).             |
 
-### 안전장치
+### Safeguards
 
-- **이중 확인 없이는 실발송 불가**: MCP 도구 호출의 `confirm: true`와 프로세스 환경변수
-  `SEND_MODE=live`가 **둘 다** 있어야만 실제로 메일이 나간다 — 자율 에이전트의 실수 방지.
-- **중복 발송 방지(멱등성)**: 같은 행 + 같은 템플릿 조합은 한 번만 발송된다. `claim → 발송 →
-commit/release` 3단계로 발송 여부를 원자적으로 기록해, 같은 명령을 여러 번 실행하거나 프로세스가
-  중간에 죽어도 이중 발송이 나지 않는다(로컬 SQLite `SendLog`, `docs/DESIGN.md` §3/§6).
-- **대량 오발송 방지**: 필터를 통과한 대상이 1,000행을 넘으면 live 발송은 한 건도 보내지 않고
-  즉시 중단한다(부분 발송 사고 방지, `MAX_PIPELINE_ROWS`).
-- **외부 API 타임아웃**: Google Sheets/Resend 호출 모두 기본 30초 타임아웃이 있어, 네트워크 장애로
-  파이프라인 전체가 무기한 멈추지 않는다.
-- **사용자 데이터는 절대 건드리지 않는다**: 시트 쓰기는 상태 컬럼 4개(`_send_status`/`_sent_at`/
-  `_message_id`/`_error`)에만 한정된다.
-- **자동 실행 불가한 복구 절차**: 프로세스가 죽어 claim이 걸린 채로 남으면, 자율 에이전트가 스스로
-  회수할 수 없고 사람이 운영 CLI(`sheet-mcp-recover`, 기본 read-only + 감사 로그)로만 회수할 수
-  있다.
+- **No live sending without dual confirmation**: a real email only goes out when **both** the MCP tool call's `confirm: true` **and** the process environment variable `SEND_MODE=live` are present — this guards against mistakes by an autonomous agent.
+- **Duplicate-send prevention (idempotency)**: the same row + the same template combination is sent only once. A 3-step `claim → send → commit/release` flow atomically records whether a send happened, so running the same command multiple times — or the process dying mid-run — never causes a double send (local SQLite `SendLog`, `docs/DESIGN.md` §3/§6).
+- **Mass-misfire prevention**: if the number of rows passing the filter exceeds 1,000, a live send sends nothing and aborts immediately (prevents partial-send incidents, `MAX_PIPELINE_ROWS`).
+- **External API timeouts**: both Google Sheets and Resend calls have a default 30-second timeout, so a network failure can't hang the whole pipeline indefinitely.
+- **User data is never touched**: sheet writes are limited to the 4 status columns (`_send_status`/`_sent_at`/`_message_id`/`_error`).
+- **Recovery that can't run automatically**: if the process dies while a claim is held, an autonomous agent cannot reclaim it by itself — only a human, via the operational CLI (`sheet-mcp-recover`, read-only by default + audit log), can reclaim it.
 
-### 시트 규약
+### Sheet Convention
 
-하나의 구글시트에 `notify_config` 탭(발송 설정: 데이터 탭 이름, 수신자 컬럼, 제목/본문 템플릿,
-선택적 필터)과 데이터 탭(1행 헤더 = 템플릿 변수명)을 두면 끝난다 — 별도 DB나 스키마 마이그레이션이
-필요 없다. 자세한 규약과 최소 예시는 아래 "예시 시트 템플릿" 참고.
+Just add a `notify_config` tab (send settings: data tab name, recipient column, subject/body templates, optional filter) and a data tab (row 1 = header = template variable names) to a single Google Sheet — no separate database or schema migration needed. See "Example Sheet Template" below for the full convention and a minimal example.
 
-### 설치 방법 2가지
+### Two Installation Methods
 
-- **레포 clone** (개발/기여용): `.mcp.json`을 커밋해 팀과 공유.
-- **`npx sheet-mcp`** (clone 없이 쓰기, `npm publish` 이후): `claude mcp add`의 `-e` 플래그로
-  환경변수를 직접 넘겨 등록. 자세한 내용은 아래 "실행 절차"와 `docs/DESIGN.md` §8.
+- **Clone the repo** (for development/contribution): commit `.mcp.json` and share it with the team.
+- **`npx sheet-mcp`** (use it without cloning): register it by passing environment variables directly via `claude mcp add`'s `-e` flag. See "Setup Procedure" below and `docs/DESIGN.md` §8.
 
-## 문서 맵
+## Documentation Map
 
-> 아래 상대 경로는 저장소를 clone했거나 [GitHub 저장소](https://github.com/Trapa-Eureka/sheet_mcp)를
-> 보고 있을 때만 유효하다 — `npx sheet-mcp`로 설치한 패키지에는 `docs/`가 포함되지 않는다
-> (docs/ADVERSARIAL_REVIEW_004.md AR-027).
+> The relative paths below are only valid if you've cloned the repository or are viewing the
+> [GitHub repository](https://github.com/Trapa-Eureka/sheet_mcp) — the package installed via
+> `npx sheet-mcp` does not include `docs/` (docs/ADVERSARIAL_REVIEW_004.md AR-027).
 
-| 문서               | 내용                                                  | 읽는 시점                              |
-| ------------------ | ----------------------------------------------------- | -------------------------------------- |
-| `CLAUDE.md`        | 에이전트 스티어링 파일 — 스택, 명령어, 규칙, 가드레일 | 모든 에이전트 세션 시작 시 (자동 로드) |
-| `docs/SPEC.md`     | 제품 스펙 — 배경, 목표/비목표, 시나리오, 로드맵       | 기능 논의·범위 판단 전                 |
-| `docs/DESIGN.md`   | 기술 설계 — 아키텍처, 인터페이스, 시트 규약, MCP 도구 | 구현 전 필독                           |
-| `docs/TESTING.md`  | 테스트 전략 — 목(mock) 구성, 엣지 케이스, 게이트      | 테스트 작성 전                         |
-| `docs/TASKS.md`    | 태스크 백로그 — 에이전트 실행 단위, 완료 기준         | 작업 배정 시                           |
-| `docs/WORKFLOW.md` | AI-native 개발 방식 — 이 레포를 굴리는 규칙           | 최초 1회 + 운영 중 참조                |
+| Document           | Content                                                                  | When to read it                                   |
+| ------------------ | ------------------------------------------------------------------------ | ------------------------------------------------- |
+| `CLAUDE.md`        | Agent steering file — stack, commands, conventions, guardrails           | At the start of every agent session (auto-loaded) |
+| `docs/SPEC.md`     | Product spec — background, goals/non-goals, scenarios, roadmap           | Before discussing features/scope                  |
+| `docs/DESIGN.md`   | Technical design — architecture, interfaces, sheet convention, MCP tools | Required reading before implementation            |
+| `docs/TESTING.md`  | Test strategy — mock setup, edge cases, gates                            | Before writing tests                              |
+| `docs/TASKS.md`    | Task backlog — agent execution units, completion criteria                | When assigning work                               |
+| `docs/WORKFLOW.md` | AI-native development approach — the rules that run this repo            | Once at the start + as an ongoing reference       |
 
-## 개발 방식
+## Development Approach
 
-이 프로젝트는 **문서 → 에이전트 구현 → 검증** 순서로 진행한다 (`docs/WORKFLOW.md` 참조).
-사람(Jin)은 스펙·설계·리뷰·실발송 승인을 맡고, 코드 작성은 Claude Code 에이전트가 `docs/TASKS.md`의 태스크 단위로 수행한다. 모든 태스크의 공통 완료 조건은 `npm run check` 통과다.
+This project proceeds in the order **docs → agent implementation → verification** (see `docs/WORKFLOW.md`).
+A human (Jin) owns spec/design/review/live-send approval, and code is written by a Claude Code agent, one task at a time from `docs/TASKS.md`. Every task's shared completion condition is that `npm run check` passes.
 
-## 퀵스타트 (개발/검증)
+## Quickstart (Development/Testing)
 
 ```bash
 npm install
-npm run check         # typecheck + lint + format:check + test — 에이전트/사람 공통 게이트
-npm run dev           # MCP 서버 stdio 실행 (.env 시크릿 필요 — 아래 "실행 절차" 참고)
+npm run check         # typecheck + lint + format:check + test — the shared agent/human gate
+npm run dev           # runs the MCP server over stdio (.env secrets required — see "Setup Procedure" below)
 ```
 
-## 실행 절차 (실제 시트/이메일로 써보기)
+## Setup Procedure (Trying it with a real sheet/email)
 
-1. `.env.example`을 `.env`로 복사하고 `GOOGLE_SERVICE_ACCOUNT_JSON`/`RESEND_API_KEY`/`MAIL_FROM`을 채운다.
-2. 아래 "예시 시트 템플릿"대로 구글시트를 만들고 서비스 계정 이메일에 편집자로 공유한 뒤, `.env`에 `SMOKE_SHEET_ID=<시트 ID>`를 넣는다.
-3. `npm run smoke`로 미리보기를 확인한다 (기본값은 항상 dry-run — 실제 발송 없음).
-4. 실제 발송하려면 `SEND_MODE=live SMOKE_CONFIRM_SEND=1 npm run smoke` (대상 행이 정확히 1개일 때만 발송됨).
-5. Claude Code에서는 이 레포를 열고 `/mcp`로 `sheet-mcp` 연결을 확인한다 (`.mcp.json` 커밋됨, `docs/DESIGN.md` §8).
+1. Copy `.env.example` to `.env` and fill in `GOOGLE_SERVICE_ACCOUNT_JSON`/`RESEND_API_KEY`/`MAIL_FROM`.
+2. Build a Google Sheet per "Example Sheet Template" below, share it with your service account's email as an editor, then set `SMOKE_SHEET_ID=<sheet ID>` in `.env`.
+3. Run `npm run smoke` to check the preview (the default is always a dry run — nothing is sent).
+4. To actually send, run `SEND_MODE=live SMOKE_CONFIRM_SEND=1 npm run smoke` (only sends if exactly one row is targeted).
+5. In Claude Code, open this repo and confirm the `sheet-mcp` connection with `/mcp` (`.mcp.json` is committed, see `docs/DESIGN.md` §8).
 
-레포를 clone하지 않고 `npx sheet-mcp`로 바로 쓰는 방법도 준비 중이다(`docs/DESIGN.md` §8-B) —
-이 경로에서는 `.env` 파일 대신 `claude mcp add sheet-mcp -e GOOGLE_SERVICE_ACCOUNT_JSON=<절대경로> -e RESEND_API_KEY=... -e MAIL_FROM=... -- npx -y sheet-mcp`처럼
-`-e` 플래그로 환경변수를 직접 넘기는 걸 권장한다(이유는 §8-B 참고).
-**단 아직 `npm publish`를 하지 않아 지금은 동작하지 않는다.** 그 전까지는 위 clone 방식만 쓸 수 있다.
+### Using `npx sheet-mcp` (no clone required)
 
-## 예시 시트 템플릿
+The package is published on npm, so you can register it directly with Claude Code without cloning this repo. Instead of a `.env` file, pass your credentials directly as `-e` flags on `claude mcp add` — see `docs/DESIGN.md` §8-B for why a `.env` file doesn't work reliably for this path.
 
-`notify_config` 탭(A열=키, B열=값)과 데이터 탭 하나로 구성한다 — 전체 키 목록/규칙은 `docs/DESIGN.md` §2.
+```bash
+claude mcp add sheet-mcp --scope local \
+  -e GOOGLE_SERVICE_ACCOUNT_JSON=<absolute path to your service-account JSON file> \
+  -e RESEND_API_KEY=<your Resend API key> \
+  -e MAIL_FROM=<your verified sending address> \
+  -- npx -y sheet-mcp
+```
 
-**notify_config 탭 최소 구성**
+**Worked example** — this is exactly the same command with every value filled in, so you can see what a real, working setup looks like. Copy it and swap in your own values:
 
-| A                  | B                                           |
-| ------------------ | ------------------------------------------- |
-| `data_tab`         | `customers`                                 |
-| `id_column`        | `customer_id`                               |
-| `recipient_column` | `email`                                     |
-| `channel`          | `email`                                     |
-| `subject_template` | `[{{shop}}] 결제 안내`                      |
-| `body_template`    | `{{name}}님, {{amount}} 결제 부탁드립니다.` |
-| `filter_column`    | `status`                                    |
-| `filter_value`     | `unpaid`                                    |
+```bash
+claude mcp add sheet-mcp --scope local \
+  -e GOOGLE_SERVICE_ACCOUNT_JSON=/Users/jin/keys/sheet-mcp-service-account.json \
+  -e RESEND_API_KEY=re_AbCdEfGh_1234567890abcdefghij \
+  -e MAIL_FROM=notify@updates.example.com \
+  -- npx -y sheet-mcp
+```
 
-**데이터 탭**: 1행은 헤더(=템플릿 변수명), 2행부터 데이터. `fixtures/sheets/collections.json`이
-실제 예시(12행, 타갈로그/영어 혼용 미수금 시나리오)다 — 같은 컬럼 구성으로 구글시트에 옮기면
-스모크용으로 바로 쓸 수 있다. 발송 결과는 이 탭 끝에 `_send_status`/`_sent_at`/`_message_id`/`_error`
-4개 컬럼으로 자동 기록되며, 사용자 데이터 컬럼은 절대 수정되지 않는다.
+What to change for your own setup:
 
-## 운영 — 기존 DB 업그레이드 / stale claim 복구
+- **`GOOGLE_SERVICE_ACCOUNT_JSON`** — the absolute path to the service-account key JSON file you downloaded from Google Cloud Console (IAM & Admin → Service Accounts → Keys → Add Key → JSON). It must be an **absolute** path: `npx` runs from wherever Claude Code happens to be running, not from this repo, so a relative path like `./service-account.json` won't resolve reliably.
+- **`RESEND_API_KEY`** — your own key from resend.com → API Keys.
+- **`MAIL_FROM`** — an address at a domain you've verified with Resend (resend.com → Domains → Add Domain, then add the DNS records it gives you). If you don't have a domain yet, you can start with Resend's test-only address `onboarding@resend.dev` to try things out — but that address can only send to the email address on your own Resend account until you verify a real domain.
+- **`sheet-mcp`** (the first argument) — the name this server is registered under in Claude Code; change it if you want something else.
+- **`--scope local`** — keep this as `local` (or `user`) when passing real secrets. Never use `--scope project` with real credentials: that scope commits `.mcp.json` to git, which would leak your secrets.
 
-- **기존 `sendlog.db` 업그레이드**: 서버(`npm run dev`)나 스모크(`npm run smoke`)를 새 버전 코드로
-  다시 실행하면 `SqliteSendLog`가 기존 DB 스키마를 자동 감지해 무손실로 새 스키마로 마이그레이션한다
-  (원본은 `send_log_v1_backup_*` 테이블로 보존). 사람이 따로 할 일은 없다. 상세 동작은
-  `docs/DESIGN.md` §6.
-- **claim이 오래 걸려 있을 때(정상 종료 없이 프로세스가 죽은 경우 등)**: 절대 DB 파일을 직접
-  손대지 말고 먼저 조회한다 — 레포 clone 개발 환경이면
-  `npm run recover:stale-claim -- --db ./data/sendlog.db --sheet-id <id> --tab <tab> --row-key <key> --template-hash <hash>`,
-  `npx sheet-mcp`로 설치했다면 `npx sheet-mcp-recover --db ... --sheet-id ... --tab ... --row-key ... --template-hash ...`
-  (같은 인자, 기본은 읽기 전용이라 아무 것도 지우지 않음). 회수하려면 `--older-than-ms`와
-  `--confirm`을 추가한다. 자세한 옵션과 안전장치는 `src/cli/recoverStaleClaim.ts` 상단 주석과
-  `docs/DESIGN.md` §6을 참고.
+Once registered, confirm the connection inside Claude Code with `/mcp`.
 
-## 상태
+## Example Sheet Template
 
-진행 상태는 여기 수동으로 적지 않는다 — `docs/TASKS.md`의 각 태스크 상태(`DONE(날짜)`/`TODO`)가
-유일한 진실의 원천이다. README에 별도로 적으면 다음 태스크 완료 시 갱신을 잊고 뒤처지기 쉽다
-(`docs/ADVERSARIAL_REVIEW_002.md` AR-010).
+One `notify_config` tab (column A = key, column B = value) and one data tab — see `docs/DESIGN.md` §2 for the full key list and rules.
 
-MCP 도구까지 전부 동작하는 실행 가능한 제품인지는 T8~T10이 `DONE`인지로 판단한다.
+**Minimal `notify_config` tab**
+
+| A                  | B                                     |
+| ------------------ | ------------------------------------- |
+| `data_tab`         | `customers`                           |
+| `id_column`        | `customer_id`                         |
+| `recipient_column` | `email`                               |
+| `channel`          | `email`                               |
+| `subject_template` | `[{{shop}}] Payment notice`           |
+| `body_template`    | `Hi {{name}}, please pay {{amount}}.` |
+| `filter_column`    | `status`                              |
+| `filter_value`     | `unpaid`                              |
+
+**Data tab**: row 1 is the header (= template variable names), data starts at row 2. `fixtures/sheets/collections.json` is a real example (12 rows, a mixed Tagalog/English outstanding-balance scenario) — move it into a Google Sheet with the same columns and it's ready to use for a smoke test. Send results are automatically recorded at the end of this tab in 4 columns — `_send_status`/`_sent_at`/`_message_id`/`_error` — and user data columns are never modified.
+
+## Operations — Existing DB Upgrade / Stale Claim Recovery
+
+- **Upgrading an existing `sendlog.db`**: the next time you run the server (`npm run dev`) or the smoke script (`npm run smoke`) with the newer code, `SqliteSendLog` auto-detects the old DB schema and migrates it losslessly to the new schema (the original is preserved in a `send_log_v1_backup_*` table). There's nothing a human needs to do. See `docs/DESIGN.md` §6 for details.
+- **When a claim has been sitting for a long time** (e.g., the process died without a clean shutdown): never touch the DB file directly — query it first. In a repo-clone dev environment: `npm run recover:stale-claim -- --db ./data/sendlog.db --sheet-id <id> --tab <tab> --row-key <key> --template-hash <hash>`. If installed via `npx sheet-mcp`: `npx sheet-mcp-recover --db ... --sheet-id ... --tab ... --row-key ... --template-hash ...` (same arguments; read-only by default, deletes nothing). To actually reclaim it, add `--older-than-ms` and `--confirm`. For full options and safeguards, see the header comment in `src/cli/recoverStaleClaim.ts` and `docs/DESIGN.md` §6.
+
+## Status
+
+Progress isn't tracked manually here — the single source of truth is each task's status (`DONE(date)`/`TODO`) in `docs/TASKS.md`. Duplicating it in the README makes it easy to forget to update on the next task's completion (`docs/ADVERSARIAL_REVIEW_002.md` AR-010).
+
+Whether this is a fully working product end to end, including the MCP tools, is determined by whether T8–T10 are `DONE`.
