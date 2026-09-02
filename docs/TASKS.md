@@ -203,6 +203,19 @@ Dependency graph: `T0 → T1 → {A: T2→T3, B: T4, C: T5, D: T6} → T7 → T8
   after separate explicit user approval. Verified `dist-tags.latest = "0.1.1"` via the registry API and
   that the package page's README reflects the English version.
 
+### T14 follow-up — Republished as `0.1.2`: full source-code comment/string translation · Status: DONE(2026-09-02)
+
+- All Korean code comments and user-facing/log/error string literals across `src/`, `scripts/`, and
+  `tests/` were translated to English (see the `i18n: translate all source code comments and
+user-facing strings to English` commit) — the remaining piece after the docs translation in `0.1.1`.
+  This changes the actual text of runtime error/log messages (a real behavior-adjacent change to what
+  end users/agents see, even though logic is unchanged), so it's published as its own patch bump:
+  `0.1.1` → `0.1.2`.
+- Completion record (no secrets): published `sheet-mcp@0.1.2` to the public npm registry, tag `latest`,
+  after separate explicit user approval. Verified `dist-tags.latest = "0.1.2"` via the registry API and
+  that a clean `npx -y sheet-mcp` run against the real registry produces the new English fail-fast
+  error text without credentials.
+
 ---
 
 ## v0.2 queue (do not start — see the SPEC roadmap)
