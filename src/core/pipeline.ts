@@ -1,7 +1,8 @@
-// 발송 파이프라인 — docs/DESIGN.md §4의 흐름. core/는 인터페이스만 알고 실제 어댑터를 모른다
-// (SheetClient/NotificationProvider/SendLog/Clock은 전부 생성자로 주입받는다). 태스크: docs/TASKS.md T7.
-// claim/commit/release 기반 원자적 중복 방지, sent_log_failed 상태, AR-014 상태 셀 정책은
-// docs/ADVERSARIAL_REVIEW_003.md AR-011/AR-013/AR-014/AR-017 대응.
+// Send pipeline — the flow from docs/DESIGN.md §4. core/ knows only interfaces and nothing about the
+// actual adapters (SheetClient/NotificationProvider/SendLog/Clock are all injected via the constructor).
+// Task: docs/TASKS.md T7. Atomic duplicate prevention via claim/commit/release, the sent_log_failed
+// status, and the AR-014 status-cell policy address docs/ADVERSARIAL_REVIEW_003.md
+// AR-011/AR-013/AR-014/AR-017.
 
 import { createHash } from "node:crypto";
 import { z } from "zod";
@@ -43,39 +44,44 @@ export interface PipelineResult {
   sent: number;
   failed: number;
   skipped: number;
-  /** status==="sent_log_failed"인 행 수. sent/failed/skipped 어디에도 넣지 않는다 — "성공"도
-   * "실패"도 아닌 불확실한 상태를 다른 집계에 섞으면 그 집계의 의미가 흐려지기 때문이다. 대신
-   * sent+failed+skipped+logFailed는 항상 details.length와 같다(집계 불변식,
-   * docs/ADVERSARIAL_REVIEW_003_RESOLUTION_GAPS.md GAP-002). */
+  /** Number of rows with status==="sent_log_failed". Not folded into sent/failed/skipped — mixing an
+   * uncertain status that is neither "success" nor "failure" into another aggregate would blur that
+   * aggregate's meaning. Instead sent+failed+skipped+logFailed always equals details.length (the
+   * aggregate invariant, docs/ADVERSARIAL_REVIEW_003_RESOLUTION_GAPS.md GAP-002). */
   logFailed: number;
-  /** filter_column/filter_value 적용 후 실제로 매칭된 전체 행 수 (details.length보다 클 수 있음 —
-   * MAX_PIPELINE_ROWS를 넘겨 잘렸을 때. docs/ADVERSARIAL_REVIEW_004.md AR-022). */
+  /** Total number of rows actually matched after applying filter_column/filter_value (can be larger than
+   * details.length — when truncated for exceeding MAX_PIPELINE_ROWS.
+   * docs/ADVERSARIAL_REVIEW_004.md AR-022). */
   totalMatched: number;
-  /** totalMatched가 MAX_PIPELINE_ROWS를 넘어 details가 잘렸는지. dry-run에서만 true가 될 수 있다 —
-   * live에서 이 한도를 넘으면 잘라서 일부만 보내는 대신 run() 자체가 에러를 던진다(아래 참고). */
+  /** Whether totalMatched exceeded MAX_PIPELINE_ROWS and details was truncated. Can only be true in
+   * dry-run — in live mode, exceeding this limit makes run() itself throw instead of truncating and
+   * sending only part of the rows (see below). */
   truncated: boolean;
   details: PipelineRowDetail[];
 }
 
-/** preview/send가 한 번에 처리할 수 있는 최대 행 수(필터 적용 후 기준) — docs/DESIGN.md §6
- * "예시 시트 템플릿"의 fixtures/sheets/large-1000.json(1000행) 규모에 맞춘 보수적 상한이다
- * (docs/ADVERSARIAL_REVIEW_004.md AR-022). Google Sheets 읽기 자체나 시트 크기를 제한하지는
- * 않지만, 이 서버가 한 번의 실행에서 렌더링·발송·응답 직렬화할 행 수를 여기서 막아 대형/실수로
- * 넓어진 시트가 메모리 급증이나 대량 오발송으로 이어지는 것을 방지한다. 환경변수로 노출하지
- * 않는다 — 노출하면 사람이 실수로 늘려서 이 안전장치 자체를 우회할 수 있다. */
+/** The maximum number of rows preview/send can process in a single call (measured after filtering) — a
+ * conservative cap sized to the fixtures/sheets/large-1000.json (1000-row) scale from the "example sheet
+ * template" in docs/DESIGN.md §6 (docs/ADVERSARIAL_REVIEW_004.md AR-022). It does not limit the Google
+ * Sheets read itself or the sheet's size, but it caps how many rows this server will render, send, and
+ * serialize into a response within a single run, so that a large or accidentally-widened sheet cannot
+ * cause a memory spike or a mass accidental send. It is not exposed via an environment variable — exposing
+ * it would let a human raise it by mistake and bypass this safeguard itself. */
 export const MAX_PIPELINE_ROWS = 1000;
 
 /**
- * subject+body **원본** 템플릿(렌더 전)의 sha256 앞 12자 — DESIGN §4-4단계.
- * 행 값이 아니라 템플릿 문자열 자체를 해시하므로, 같은 템플릿이면 모든 행이 같은 해시를 공유하고
- * 템플릿을 고치면(오타 수정 등) 해시가 바뀌어 재발송이 허용된다(의도된 동작).
+ * The first 12 hex characters of the sha256 of the **original** (pre-render) subject+body template —
+ * DESIGN §4 step 4. It hashes the template string itself, not the row values, so all rows sharing the
+ * same template share the same hash, and fixing the template (e.g. correcting a typo) changes the hash
+ * and allows re-sending (intended behavior).
  *
- * subject와 body를 **각각 먼저 해시한 뒤 그 두 다이제스트를 합쳐 다시 해시**한다 — 구분자를 문자로
- * 끼워 넣는 방식(예: 공백)은 "A "+"B"와 "A"+" B"처럼 경계에 그 구분자와 같은 문자가 있으면 서로
- * 다른 (subject, body) 조합이 같은 바이트 시퀀스로 합쳐져 해시가 충돌한다
- * (docs/ADVERSARIAL_REVIEW_003_RESOLUTION_GAPS.md REG-001 — 실제로 공백 구분자에서 재현됨).
- * sha256 다이제스트는 항상 고정 64자(hex)이므로, 두 다이제스트를 이어붙이는 경계는 내용에 따라
- * 흔들리지 않아 이 문제가 원천적으로 발생하지 않는다.
+ * subject and body are **each hashed first, and then the two digests are concatenated and hashed again**
+ * — inserting a delimiter character between them instead (e.g. a space) would let a boundary coincide
+ * with that delimiter character, so "A "+"B" and "A"+" B" would collapse into the same byte sequence for
+ * two different (subject, body) pairs and collide (docs/ADVERSARIAL_REVIEW_003_RESOLUTION_GAPS.md
+ * REG-001 — actually reproduced with a space delimiter). A sha256 digest is always a fixed 64 hex
+ * characters, so the boundary where the two digests are concatenated never shifts based on content,
+ * which eliminates this problem at the root.
  */
 export function computeTemplateHash(subjectTemplate: string, bodyTemplate: string): string {
   const subjectDigest = createHash("sha256").update(subjectTemplate).digest("hex");
@@ -84,49 +90,53 @@ export function computeTemplateHash(subjectTemplate: string, bodyTemplate: strin
 }
 
 /**
- * DESIGN §5 "이중 안전장치"의 판정 로직: 도구 파라미터(confirm)와 프로세스 환경변수(SEND_MODE)가
- * **둘 다** 만족해야만 실발송이다. 순수 함수라 MCP 서버 없이도 이 파일의 테스트에서 검증할 수 있다.
- * 하나라도 아니면 무조건 dryRun=true — 안전한 쪽으로 fail한다.
+ * The decision logic for DESIGN §5's "dual safeguard": it is a real send only when **both** the tool
+ * parameter (confirm) and the process environment variable (SEND_MODE) are satisfied. It's a pure
+ * function, so it can be verified in this file's tests without an MCP server. If either one is missing,
+ * dryRun=true unconditionally — fail toward the safe side.
  */
 export function resolveDryRun(sendMode: string | undefined, confirm: boolean): boolean {
   return !(sendMode === "live" && confirm);
 }
 
 /**
- * DESIGN §5 send_notifications 도구가 붙일 안내 문구. resolveDryRun()이 dryRun=true를 반환했을 때
- * (즉 실발송하지 않았을 때) 왜 안 됐는지·어떻게 실발송하는지를 알려준다. 실발송이면 안내가
- * 필요 없으므로 undefined.
+ * The notice text the DESIGN §5 send_notifications tool attaches. When resolveDryRun() returned
+ * dryRun=true (i.e., no real send happened), it explains why not and how to actually send for real. No
+ * notice is needed for a real send, so undefined.
  */
 export function buildDryRunNotice(dryRun: boolean): string | undefined {
   if (!dryRun) return undefined;
   return (
-    "실제 발송하지 않았습니다 (미리보기 결과입니다). 실제로 발송하려면 send_notifications 호출 시 " +
-    "confirm=true를 넘기고, 서버 프로세스 환경변수에 SEND_MODE=live를 설정하세요 (DESIGN §5 이중 안전장치, 둘 다 필요)."
+    "No actual send was made (this is a preview result). To actually send, pass " +
+    "confirm=true when calling send_notifications, and set SEND_MODE=live in the server process's " +
+    "environment variables (DESIGN §5 dual safeguard — both are required)."
   );
 }
 
-/** filter_column/filter_value를 적용해 발송 대상 행만 남긴다. read_rows 도구(core/readRows.ts)도
- * 같은 필터링 규칙을 써야 하므로 export한다. */
+/** Keeps only the rows targeted for sending by applying filter_column/filter_value. Exported because the
+ * read_rows tool (core/readRows.ts) must apply the same filtering rule. */
 export function applyFilter(
   rows: SheetRow[],
   filterColumn: string | undefined,
   filterValue: string | undefined,
 ): SheetRow[] {
-  // config.ts가 filter_column/filter_value를 "함께 있거나 둘 다 없거나"로 이미 검증했으므로
-  // 여기서는 하나만 있는 경우를 걱정할 필요가 없다.
+  // config.ts has already validated that filter_column/filter_value are "either both present or both
+  // absent", so we don't need to worry about only one of them being present here.
   if (filterColumn === undefined || filterValue === undefined) {
     return rows;
   }
-  // DESIGN §2/TESTING §4: 대소문자 그대로 비교(정규화 없음).
+  // DESIGN §2/TESTING §4: compare case-sensitively (no normalization).
   return rows.filter((row) => row.values[filterColumn] === filterValue);
 }
 
-// 과도한 RFC 5322 전체 구현 대신, 흔한 명백한 불량 주소(`a@`, `@example.com`, `a@@example.com`,
-// 공백 포함 등)만 발송 전 경계에서 걸러내는 실용적 형식 검사 — docs/ADVERSARIAL_REVIEW_003.md AR-017.
+// A pragmatic format check that filters out only common, obviously-bad addresses (`a@`, `@example.com`,
+// `a@@example.com`, addresses containing whitespace, etc.) at the boundary before sending, rather than a
+// full RFC 5322 implementation — docs/ADVERSARIAL_REVIEW_003.md AR-017.
 const emailFormatSchema = z.string().email();
 
-/** 파이프라인 내부 작업 상태. "pending"은 발송 시도 전(멱등성 검사까지 통과) 상태를 뜻하며,
- * dryRun 경로가 아닌 이상 run() 종료 시점까지 반드시 pending이 아닌 상태로 해소되어야 한다. */
+/** Internal pipeline working state. "pending" means before a send attempt (having passed the idempotency
+ * check), and unless it's on the dryRun path, every row must resolve to a non-pending status by the time
+ * run() finishes. */
 interface WorkingRow {
   rowIndex: number;
   rowKey: string;
@@ -142,66 +152,69 @@ export class SendPipeline {
   constructor(private readonly deps: SendPipelineDeps) {}
 
   async run(sheetId: string, opts: RunOptions): Promise<PipelineResult> {
-    // 1. config 읽기 + zod 검증 — 실패하면 ConfigParseError가 그대로 전파된다.
-    //    (에러 메시지 자체가 "무엇이 왜 + 어떻게 고치나"를 담고 있으므로 여기서 감쌀 필요 없음)
+    // 1. Read config + validate with zod — on failure, the ConfigParseError propagates as-is.
+    //    (The error message itself already carries "what's wrong + how to fix it", so no need to wrap it here.)
     const rawConfig = await this.deps.sheetClient.readConfig(sheetId);
     const config = parseNotifyConfig(rawConfig);
 
-    // 2. 행 읽기 + filter_column/filter_value 적용
+    // 2. Read rows + apply filter_column/filter_value
     const allRows = await this.deps.sheetClient.readRows(sheetId, config.dataTab);
     const matchedRows = applyFilter(allRows, config.filterColumn, config.filterValue);
     const totalMatched = matchedRows.length;
     const truncated = totalMatched > MAX_PIPELINE_ROWS;
 
-    // AR-022: 필터를 통과한 행이 MAX_PIPELINE_ROWS를 넘으면 live에서는 일부만 조용히 보내는 대신
-    // 발송을 아예 시작하지 않고 안전하게 중단한다 — "몇 명은 받고 몇 명은 못 받았는지 알 수 없는"
-    // 부분 발송 사고보다, 아무도 못 받고 사람이 필터를 좁혀서 다시 시도하는 쪽이 훨씬 안전하다.
-    // dry-run은 상태를 바꾸지 않으므로 잘라서 미리보기만 보여주고 totalMatched/truncated로
-    // 실제로는 더 많다는 사실을 알린다(read_rows와 동일한 정책).
+    // AR-022: if the rows passing the filter exceed MAX_PIPELINE_ROWS, in live mode we don't quietly
+    // send only some of them — we abort the send entirely before it starts. A partial-send incident
+    // where "some people got it and some didn't, and we don't know which" is far more dangerous than
+    // nobody getting it and the operator narrowing the filter and retrying. dry-run doesn't change any
+    // state, so it just truncates for the preview and reports via totalMatched/truncated that there is
+    // actually more (the same policy as read_rows).
     if (truncated && !opts.dryRun) {
       throw new Error(
-        `발송 대상이 ${String(totalMatched)}행으로 한도(${String(MAX_PIPELINE_ROWS)}행)를 ` +
-          `초과합니다. notify_config의 filter_column/filter_value로 대상을 좁히거나, 여러 배치로 ` +
-          "나눠 실행하세요. 안전을 위해 일부만 발송하지 않고 전체 실행을 중단했습니다(발송 없음).",
+        `The send target has ${String(totalMatched)} rows, exceeding the limit (${String(MAX_PIPELINE_ROWS)} rows). ` +
+          "Narrow the target using notify_config's filter_column/filter_value, or run it in multiple " +
+          "batches. For safety, the entire run was aborted instead of sending only part of it (nothing was sent).",
       );
     }
     const rows = truncated ? matchedRows.slice(0, MAX_PIPELINE_ROWS) : matchedRows;
 
     const templateHash = computeTemplateHash(config.subjectTemplate, config.bodyTemplate);
 
-    // 3. 행별 렌더링 — 수신자 결측/이메일 형식 불량/템플릿 변수 결측은 여기서 failed로 확정한다
+    // 3. Per-row rendering — a missing recipient, malformed email format, or missing template variable
+    // is finalized as failed right here.
     const workingRows = rows.map((row) => this.planRow(row, config));
 
     if (opts.dryRun) {
-      // dry-run 전용 멱등성 검사: 상태를 바꾸지 않는 읽기 전용 wasSent()만 쓴다(claim()은 절대 쓰지
-      // 않는다 — 미리보기가 실제 발송 예약을 만들면 그 예약이 commit/release 없이 영원히 남아
-      // 이후 실제 발송을 막아버린다).
+      // dry-run-only idempotency check: uses only the read-only wasSent(), which doesn't change state
+      // (claim() is never used here — if the preview created a real send reservation, that reservation
+      // would sit there forever with no commit/release and block a later real send).
       for (const row of workingRows) {
         if (row.status !== "pending") continue;
         if (this.deps.sendLog.wasSent(sheetId, config.dataTab, row.rowKey, templateHash)) {
           row.status = "skipped_duplicate";
         }
       }
-      // dryRun이면 여기서 결과(발송될 목록 미리보기)만 반환 — provider/sendLog/시트 쓰기 전부 없음
+      // For dryRun, return only the result here (a preview of what would be sent) — no provider,
+      // sendLog, or sheet writes at all
       return this.summarize(workingRows, true, totalMatched, truncated);
     }
 
-    // 4~6 (live): 행마다 "예약(claim) → 발송 → 확정(commit)/해제(release)"를 하나씩 끝까지 완결한
-    // 뒤에야 다음 행으로 넘어간다 — 이렇게 해야 같은 배치에 같은 rowKey가 두 번 있어도 두 번째
-    // 행의 claim()이 즉시 실패해 중복 발송이 안 된다(AR-011). 개별 try/catch로 한 행의 실패가
-    // 배치를 중단하지 않는다.
+    // 4-6 (live): for each row, complete "reserve (claim) → send → confirm (commit)/release" fully, one
+    // row at a time, before moving on to the next — this way, even if the same rowKey appears twice in
+    // the same batch, the second row's claim() fails immediately and prevents a duplicate send (AR-011).
+    // Individual try/catch means one row's failure doesn't abort the batch.
     const nowIso = this.deps.clock.now().toISOString();
     for (const row of workingRows) {
       if (row.status !== "pending") continue;
       await this.attemptSend(sheetId, config.dataTab, templateHash, nowIso, row);
     }
 
-    // 7. write-back: 상태 컬럼 보장 후 일괄 반영
+    // 7. write-back: ensure status columns exist, then apply the updates in bulk
     await this.deps.sheetClient.ensureStatusColumns(sheetId, config.dataTab);
     const updates = workingRows.map((row) => toStatusUpdate(row, nowIso));
     await this.deps.sheetClient.writeStatus(sheetId, config.dataTab, updates);
 
-    // 8. 집계 반환 (live에서는 위에서 이미 truncated=false를 강제했다)
+    // 8. Return the aggregate (in live mode, truncated=false was already enforced above)
     return this.summarize(workingRows, false, totalMatched, truncated);
   }
 
@@ -219,8 +232,8 @@ export class SendPipeline {
         rowKey,
         status: "failed",
         error:
-          `id_column '${config.idColumn}' 값이 비어 있는 행입니다 (rowIndex ${String(rowIndex)}). ` +
-          `시트 '${config.dataTab}' 탭에서 해당 행의 ${config.idColumn} 값을 채우세요.`,
+          `Row has an empty id_column '${config.idColumn}' value (rowIndex ${String(rowIndex)}). ` +
+          `Fill in the ${config.idColumn} value for that row in the '${config.dataTab}' tab.`,
       };
     }
 
@@ -231,8 +244,8 @@ export class SendPipeline {
         rowKey,
         status: "failed",
         error:
-          `수신자 컬럼(recipient_column='${config.recipientColumn}') 값이 비어 있습니다 (rowIndex ${String(rowIndex)}). ` +
-          `시트 '${config.dataTab}' 탭에서 해당 행의 ${config.recipientColumn} 값을 채우세요.`,
+          `The recipient column (recipient_column='${config.recipientColumn}') value is empty (rowIndex ${String(rowIndex)}). ` +
+          `Fill in the ${config.recipientColumn} value for that row in the '${config.dataTab}' tab.`,
       };
     }
 
@@ -243,8 +256,8 @@ export class SendPipeline {
         status: "failed",
         to: recipient,
         error:
-          `수신자 이메일 형식이 올바르지 않습니다: '${recipient}' (rowIndex ${String(rowIndex)}). ` +
-          `유효한 이메일 주소로 ${config.recipientColumn} 값을 수정하세요.`,
+          `The recipient email format is invalid: '${recipient}' (rowIndex ${String(rowIndex)}). ` +
+          `Fix the ${config.recipientColumn} value to a valid email address.`,
       };
     }
 
@@ -258,8 +271,8 @@ export class SendPipeline {
         status: "failed",
         to: recipient,
         error:
-          `템플릿 변수 결측: ${missing.join(", ")} (rowIndex ${String(rowIndex)}). ` +
-          `시트 '${config.dataTab}' 탭에 해당 이름의 컬럼을 추가하거나, notify_config의 템플릿에서 제거하세요.`,
+          `Missing template variable(s): ${missing.join(", ")} (rowIndex ${String(rowIndex)}). ` +
+          `Add a column with that name to the '${config.dataTab}' tab, or remove it from the template in notify_config.`,
       };
     }
 
@@ -281,26 +294,29 @@ export class SendPipeline {
     row: WorkingRow,
   ): Promise<void> {
     if (row.to === undefined || row.body === undefined) {
-      // planRow가 "pending"으로 반환하는 유일한 경로에서 항상 to/body를 채우므로 실제로는 도달 불가.
-      // 방어적 가드 — 여기 도달하면 planRow/attemptSend 사이의 불변식이 깨진 버그다.
+      // planRow always fills in to/body on the only path where it returns "pending", so this is
+      // unreachable in practice. A defensive guard — reaching this means the invariant between
+      // planRow/attemptSend was broken by a bug.
       throw new Error(
-        `내부 오류: rowKey '${row.rowKey}'가 pending 상태인데 to 또는 body가 없습니다. 버그를 리포트하세요.`,
+        `Internal error: rowKey '${row.rowKey}' is in pending status but has no to or body. Please report this bug.`,
       );
     }
 
-    // 원자적 claim — 같은 배치의 중복 rowKey, 동시에 실행 중인 다른 프로세스, 과거 성공 전부
-    // 이 한 번의 호출로 막는다(AR-011). claim에 실패하면 provider를 아예 호출하지 않는다.
+    // Atomic claim — this single call blocks a duplicate rowKey within the same batch, another process
+    // running concurrently, and any past success, all at once (AR-011). If claim fails, the provider is
+    // never called at all.
     const claim = this.deps.sendLog.claim(sheetId, tab, row.rowKey, templateHash, nowIso);
     if (!claim.claimed) {
       row.status = "skipped_duplicate";
       return;
     }
     if (claim.token === undefined) {
-      // SendLog 구현이 claimed=true인데 token을 안 준 경우 — 인터페이스 계약 위반. 여기서 잡아야
-      // "token이 undefined인 채로 commit/release에 넘어가는" 더 헷갈리는 실패를 막을 수 있다.
+      // The SendLog implementation returned claimed=true without a token — a violation of the interface
+      // contract. Catching it here prevents the even more confusing failure of an undefined token being
+      // passed on to commit/release.
       throw new Error(
-        `내부 오류: SendLog.claim()이 claimed=true인데 token이 없습니다 (rowKey='${row.rowKey}'). ` +
-          "SendLog 구현의 버그입니다.",
+        `Internal error: SendLog.claim() returned claimed=true but no token (rowKey='${row.rowKey}'). ` +
+          "This is a bug in the SendLog implementation.",
       );
     }
     const token = claim.token;
@@ -328,39 +344,40 @@ export class SendPipeline {
           row.status = "sent";
           row.messageId = result.messageId;
         } catch (commitErr) {
-          // 발송 자체는 이미 성공했다 — claim을 release하면 다음 실행에서 똑같이 재발송되는 진짜
-          // 중복 사고가 나므로 절대 release하지 않는다(AR-013). 이번 실행 결과만 별도 상태로
-          // 표시해 사람이 SendLog/시트를 수동으로 확인하게 한다.
+          // The send itself already succeeded — releasing the claim would cause a genuine duplicate-send
+          // incident by re-sending identically on the next run, so it must never be released (AR-013).
+          // Instead, this run's result is marked with a separate status so a human can manually check
+          // SendLog and the sheet.
           row.status = "sent_log_failed";
           row.messageId = result.messageId;
           row.error =
-            `발송은 성공했지만(messageId=${result.messageId ?? "없음"}) 로컬 발송 기록 저장에 실패했습니다: ` +
-            `${commitErr instanceof Error ? commitErr.message : String(commitErr)}. SendLog와 이 시트 행을 ` +
-            "수동으로 확인한 뒤, 실제로 이미 발송됐는지 확인하지 않고서는 재발송하지 마세요.";
+            `The send succeeded (messageId=${result.messageId ?? "none"}), but saving the local send log failed: ` +
+            `${commitErr instanceof Error ? commitErr.message : String(commitErr)}. Manually check SendLog and ` +
+            "this sheet row, and do not re-send without first confirming whether it was actually already sent.";
           console.error(
             `[sheet-mcp] sent_log_failed: sheetId=${sheetId} tab=${tab} rowKey=${row.rowKey} ` +
-              `messageId=${result.messageId ?? "없음"} — ${row.error}`,
+              `messageId=${result.messageId ?? "none"} — ${row.error}`,
           );
         }
       } else {
         row.status = "failed";
-        row.error =
-          result.error ?? `${this.deps.provider.channel} 발송이 실패했습니다 (사유 미상).`;
+        row.error = result.error ?? `${this.deps.provider.channel} send failed (reason unknown).`;
         this.safeRelease(sheetId, tab, templateHash, token, row);
       }
     } catch (err) {
       row.status = "failed";
-      row.error = `발송 중 예외가 발생했습니다: ${err instanceof Error ? err.message : String(err)}`;
+      row.error = `An exception occurred while sending: ${err instanceof Error ? err.message : String(err)}`;
       this.safeRelease(sheetId, tab, templateHash, token, row);
     }
   }
 
   /**
-   * release()가 그 자체로 실패해도(DB 잠금·IO 오류 등) 절대 밖으로 던지지 않는다 — 예전에는 이
-   * release() 실패가 attemptSend() 밖으로 그대로 전파돼 run()의 for 루프를 중단시켜 "한 행 실패가
-   * 나머지 배치를 막지 않는다"는 핵심 계약을 깼다(docs/ADVERSARIAL_REVIEW_003_RESOLUTION_GAPS.md
-   * GAP-003). release가 실패하면 이 행의 claim이 안 풀려 다음 실행에서 재시도가 막힐 수 있다는
-   * 사실을 error 메시지와 stderr에 남겨 사람이 forceReleaseStaleClaim()으로 복구할 수 있게 한다.
+   * Never lets a release() failure (DB lock, IO error, etc.) propagate outward on its own — previously,
+   * a release() failure propagated straight out of attemptSend() and stopped run()'s for loop, breaking
+   * the core contract that "one row's failure must not block the rest of the batch"
+   * (docs/ADVERSARIAL_REVIEW_003_RESOLUTION_GAPS.md GAP-003). If release fails, this row's claim stays
+   * unreleased, which may block a retry on the next run — that fact is recorded in the error message and
+   * on stderr so a human can recover it with forceReleaseStaleClaim().
    */
   private safeRelease(
     sheetId: string,
@@ -374,9 +391,9 @@ export class SendPipeline {
     } catch (releaseErr) {
       const releaseErrMessage =
         releaseErr instanceof Error ? releaseErr.message : String(releaseErr);
-      row.error = `${row.error ?? ""} (추가로 예약 해제도 실패해 재시도가 자동으로 막혀 있을 수 있습니다: ${releaseErrMessage}. 수동 확인이 필요합니다.)`;
+      row.error = `${row.error ?? ""} (Additionally, releasing the reservation also failed, which may be blocking retries automatically: ${releaseErrMessage}. Manual verification is required.)`;
       console.error(
-        `[sheet-mcp] release 실패: sheetId=${sheetId} tab=${tab} rowKey=${row.rowKey} — ${releaseErrMessage}`,
+        `[sheet-mcp] release failed: sheetId=${sheetId} tab=${tab} rowKey=${row.rowKey} — ${releaseErrMessage}`,
       );
     }
   }
@@ -411,40 +428,44 @@ export class SendPipeline {
 }
 
 /**
- * "pending"(검증 통과 + 미중복이라 발송 시도 대상)을 최종 SendStatus로 확정한다.
- * dryRun에서는 provider를 호출하지 않으므로 실제 성공 여부를 알 수 없다 — DESIGN §4-5단계가
- * "결과(발송될 목록)만 반환"이라 명시하므로, pending 행은 "발송될 것"이라는 예측을 status="sent"로
- * 나타낸다(미리보기 용도. 실제 발송 결과와 다를 수 있음).
+ * Finalizes "pending" (passed validation and not a duplicate, so a send was attempted) into the final
+ * SendStatus. In dryRun, the provider is never called, so the actual outcome is unknown — DESIGN §4
+ * step 5 states the result is "only the list of what would be sent", so a pending row is treated as the
+ * prediction "this will be sent" and reported as status="sent" (for preview purposes only; the actual
+ * send result may differ).
  */
 function finalizeStatus(row: WorkingRow, dryRun: boolean): SendStatus {
   if (row.status !== "pending") {
     return row.status;
   }
   if (!dryRun) {
-    // run()의 live 경로가 pending 행을 전부 attemptSend()로 해소하므로 여기 도달하면 버그다.
+    // run()'s live path resolves every pending row via attemptSend(), so reaching here is a bug.
     throw new Error(
-      `내부 오류: rowKey '${row.rowKey}'가 dryRun이 아닌데도 발송 시도 전 상태(pending)로 남아있습니다.`,
+      `Internal error: rowKey '${row.rowKey}' is not dryRun but is still in the pre-send-attempt (pending) status.`,
     );
   }
   return "sent";
 }
 
 /**
- * StatusUpdate 변환. sentAt/messageId/error 결측 정책(docs/ADVERSARIAL_REVIEW_003.md AR-014):
- * - sent: 과거 실패의 잔재(_error)가 새 성공 옆에 잘못 남지 않도록 null로 지운다.
- *   messageId도 이번 발송 기준으로 다시 쓴다(없으면 null로 지워 옛 값이 새 sentAt과 짝지어
- *   잘못 보이지 않게 한다).
- * - sent_log_failed: 발송은 됐지만 로컬 기록에 실패했다는 사실을 사람이 시트에서 바로 보도록
- *   sentAt/messageId/error를 전부 채운다.
- * - failed: 과거 _sent_at/_message_id는 **의도적으로 보존**한다 — 이 행이 예전에 실제로 발송된 적
- *   있다는 감사 기록은 새 템플릿의 실패 시도로 지워지면 안 된다는 판단이다(문서화된 정책).
- * - skipped_duplicate: 아무 것도 건드리지 않는다(과거 sent 감사 기록 보존, 기존 정책 유지).
+ * Converts a row into a StatusUpdate. sentAt/messageId/error missing-value policy
+ * (docs/ADVERSARIAL_REVIEW_003.md AR-014):
+ * - sent: cleared to null so that a leftover from a past failure (_error) doesn't linger next to a new
+ *   success. messageId is also rewritten based on this send (cleared to null when absent, so an old
+ *   value can't appear misleadingly paired with the new sentAt).
+ * - sent_log_failed: sentAt/messageId/error are all filled in, so a human can see directly in the sheet
+ *   that the send succeeded but the local record failed.
+ * - failed: the past _sent_at/_message_id are **deliberately preserved** — the judgment is that an audit
+ *   record showing this row was actually sent successfully before must not be erased by a new template's
+ *   failed attempt (a documented policy).
+ * - skipped_duplicate: nothing is touched (past sent audit record preserved, keeping the existing
+ *   policy).
  */
 function toStatusUpdate(row: WorkingRow, nowIso: string): StatusUpdate {
   if (row.status === "pending") {
-    // run()의 live 경로 이후에만 호출되므로 실제로는 도달 불가 — 방어적 가드.
+    // Only ever called after run()'s live path, so unreachable in practice — a defensive guard.
     throw new Error(
-      `내부 오류: rowKey '${row.rowKey}'가 write-back 시점에도 pending 상태입니다. 버그를 리포트하세요.`,
+      `Internal error: rowKey '${row.rowKey}' is still pending at write-back time. Please report this bug.`,
     );
   }
   if (row.status === "sent") {

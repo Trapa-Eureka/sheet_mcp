@@ -14,7 +14,7 @@ function validRaw(overrides: Record<string, string> = {}): Record<string, string
 }
 
 describe("parseNotifyConfig", () => {
-  it("정상 config를 파싱한다 (필터 포함)", () => {
+  it("parses a valid config (including filter)", () => {
     const config = parseNotifyConfig(validRaw({ filter_column: "status", filter_value: "unpaid" }));
     expect(config).toEqual({
       dataTab: "collections",
@@ -28,66 +28,74 @@ describe("parseNotifyConfig", () => {
     });
   });
 
-  it("filter_column/filter_value가 둘 다 없으면 정상 파싱된다 (선택 항목)", () => {
+  it("parses successfully when both filter_column/filter_value are absent (optional)", () => {
     const config = parseNotifyConfig(validRaw());
     expect(config.filterColumn).toBeUndefined();
     expect(config.filterValue).toBeUndefined();
   });
 
-  it("filter_column/filter_value가 둘 다 공백뿐이면 원본 공백을 흘리지 않고 undefined로 정규화한다", () => {
+  it("normalizes to undefined without leaking the raw whitespace when both filter_column/filter_value are whitespace-only", () => {
     const config = parseNotifyConfig(validRaw({ filter_column: "   ", filter_value: "   " }));
     expect(config.filterColumn).toBeUndefined();
     expect(config.filterValue).toBeUndefined();
   });
 
-  it("필수 키(recipient_column)가 없으면 어떤 키를 어떻게 추가할지 담은 에러를 던진다", () => {
+  it("throws an error naming which key is missing and how to add it when a required key (recipient_column) is absent", () => {
     const raw = validRaw();
     delete raw.recipient_column;
     expect(() => parseNotifyConfig(raw)).toThrow(ConfigParseError);
-    expect(() => parseNotifyConfig(raw)).toThrow(/recipient_column.*키가 없습니다/s);
-    expect(() => parseNotifyConfig(raw)).toThrow(/recipient_column=<값> 행을 추가하세요/);
+    expect(() => parseNotifyConfig(raw)).toThrow(/recipient_column.*is missing/s);
+    expect(() => parseNotifyConfig(raw)).toThrow(/recipient_column=<value> row/);
   });
 
-  it("필수 키 값이 공백뿐이면 결측으로 취급한다", () => {
+  it("treats a required key as missing when its value is whitespace-only", () => {
     const raw = validRaw({ data_tab: "   " });
-    expect(() => parseNotifyConfig(raw)).toThrow(/'data_tab' 키가 없습니다/);
+    expect(() => parseNotifyConfig(raw)).toThrow(/'data_tab' key is missing/);
   });
 
-  it("channel=sms는 v0.2 안내가 담긴 명시적 에러를 던진다", () => {
+  it("throws an explicit error with v0.2 guidance for channel=sms", () => {
     const raw = validRaw({ channel: "sms" });
     expect(() => parseNotifyConfig(raw)).toThrow(ConfigParseError);
-    expect(() => parseNotifyConfig(raw)).toThrow(/channel=sms는 v0.1에서 지원하지 않습니다/);
+    expect(() => parseNotifyConfig(raw)).toThrow(
+      /channel=sms in the notify_config tab is not supported in v0.1/,
+    );
     expect(() => parseNotifyConfig(raw)).toThrow(/v0.2/);
   });
 
-  it("channel이 email/sms가 아니면 허용값을 안내하는 에러를 던진다", () => {
+  it("throws an error listing the allowed values when channel is neither email nor sms", () => {
     const raw = validRaw({ channel: "kakao" });
-    expect(() => parseNotifyConfig(raw)).toThrow(/channel 값 'kakao'은 지원하지 않습니다/);
-    expect(() => parseNotifyConfig(raw)).toThrow(/channel=email만 허용/);
+    expect(() => parseNotifyConfig(raw)).toThrow(
+      /channel value 'kakao' in the notify_config tab is not supported/,
+    );
+    expect(() => parseNotifyConfig(raw)).toThrow(/supports only channel=email/);
   });
 
-  it("filter_column만 있고 filter_value가 없으면 에러를 던진다", () => {
+  it("throws an error when filter_column is present but filter_value is missing", () => {
     const raw = validRaw({ filter_column: "status" });
-    expect(() => parseNotifyConfig(raw)).toThrow(/filter_column과 filter_value는 함께 설정/);
+    expect(() => parseNotifyConfig(raw)).toThrow(
+      /filter_column and filter_value in the notify_config tab must be set together/,
+    );
   });
 
-  it("filter_value만 있고 filter_column이 없으면 에러를 던진다", () => {
+  it("throws an error when filter_value is present but filter_column is missing", () => {
     const raw = validRaw({ filter_value: "unpaid" });
-    expect(() => parseNotifyConfig(raw)).toThrow(/filter_column과 filter_value는 함께 설정/);
+    expect(() => parseNotifyConfig(raw)).toThrow(
+      /filter_column and filter_value in the notify_config tab must be set together/,
+    );
   });
 
-  it("여러 필수 키가 동시에 없으면 각 키에 대한 에러 메시지를 모두 포함한다", () => {
+  it("includes an error message for every key when multiple required keys are missing at once", () => {
     const raw = validRaw();
     delete raw.data_tab;
     delete raw.body_template;
     try {
       parseNotifyConfig(raw);
-      throw new Error("에러가 던져지지 않음");
+      throw new Error("No error was thrown");
     } catch (err) {
       expect(err).toBeInstanceOf(ConfigParseError);
       const message = (err as Error).message;
-      expect(message).toMatch(/'data_tab' 키가 없습니다/);
-      expect(message).toMatch(/'body_template' 키가 없습니다/);
+      expect(message).toMatch(/'data_tab' key is missing/);
+      expect(message).toMatch(/'body_template' key is missing/);
     }
   });
 });

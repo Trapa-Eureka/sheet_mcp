@@ -14,17 +14,17 @@ function msg(rowKey: string, overrides: Partial<OutboundMessage> = {}): Outbound
 }
 
 describe("MockNotificationProvider", () => {
-  it("기본 channel은 email이다", () => {
+  it("defaults to channel email", () => {
     const provider = new MockNotificationProvider();
     expect(provider.channel).toBe("email");
   });
 
-  it("channel을 옵션으로 지정할 수 있다", () => {
+  it("allows channel to be specified via options", () => {
     const provider = new MockNotificationProvider({ channel: "sms" });
     expect(provider.channel).toBe("sms");
   });
 
-  it("성공한 메시지를 sent 배열에 기록한다", async () => {
+  it("records successful messages in the sent array", async () => {
     const provider = new MockNotificationProvider();
     const result = await provider.send(msg("CUST-001"));
 
@@ -34,7 +34,7 @@ describe("MockNotificationProvider", () => {
     expect(provider.failed).toEqual([]);
   });
 
-  it("failFor에 등록된 rowKey는 실패 처리되고 sent에 들어가지 않는다", async () => {
+  it("treats a rowKey registered in failFor as failed and excludes it from sent", async () => {
     const provider = new MockNotificationProvider({ failFor: ["CUST-003"] });
     const result = await provider.send(msg("CUST-003"));
 
@@ -44,7 +44,7 @@ describe("MockNotificationProvider", () => {
     expect(provider.failed).toEqual([msg("CUST-003")]);
   });
 
-  it("failFor에 없는 행은 정상 발송되고, 있는 행만 실패한다 (부분 실패)", async () => {
+  it("sends rows not in failFor normally, and fails only the rows that are (partial failure)", async () => {
     const provider = new MockNotificationProvider({ failFor: ["CUST-003"] });
 
     const r1 = await provider.send(msg("CUST-001"));
@@ -59,7 +59,7 @@ describe("MockNotificationProvider", () => {
     expect(provider.failed.map((m) => m.rowKey)).toEqual(["CUST-003"]);
   });
 
-  it("sent는 호출 순서를 보존한다", async () => {
+  it("preserves call order in sent", async () => {
     const provider = new MockNotificationProvider();
     await provider.send(msg("A"));
     await provider.send(msg("B"));

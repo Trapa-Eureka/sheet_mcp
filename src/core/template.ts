@@ -1,25 +1,29 @@
-// 템플릿 렌더링 — 순수 함수, 외부 IO 없음.
-// 설계: docs/DESIGN.md §3(RenderResult), 태스크: docs/TASKS.md T4.
+// Template rendering — a pure function, no external IO.
+// Design: docs/DESIGN.md §3 (RenderResult), task: docs/TASKS.md T4.
 
 import type { RenderResult } from "./types.js";
 
-// {{key}} 형태만 인식한다. 키는 중괄호 두 개가 아닌 문자는 전부 허용 — DESIGN §2 "헤더명이 곧
-// 템플릿 변수명"이라는 계약에 맞춰, 실제 구글시트 헤더에 흔한 한글/타갈로그/공백/하이픈까지
-// 키로 인식해야 한다(ASCII 영숫자+밑줄로 좁히면 그 키들이 결측으로도 탐지되지 않고 그대로
-// 미치환 텍스트가 발송될 수 있다 — docs/ADVERSARIAL_REVIEW_002.md AR-006).
-// 앞뒤 공백만 트림한다(`{{ name }}` 허용).
+// Only recognizes the {{key}} form. Any character other than the two braces is allowed in the
+// key — to match DESIGN §2's contract that "the header name is the template variable name",
+// keys must be recognized even when they contain Korean/Tagalog characters, spaces, or hyphens,
+// which are common in real Google Sheets headers (narrowing this to ASCII alphanumerics plus
+// underscore would mean those keys are not even detected as missing, and unsubstituted text
+// could be sent as-is — docs/ADVERSARIAL_REVIEW_002.md AR-006).
+// Only leading/trailing whitespace is trimmed (`{{ name }}` is allowed).
 const PLACEHOLDER_PATTERN = /\{\{([^{}]+)\}\}/g;
 
 /**
- * {{key}} 플레이스홀더를 values로 치환한다.
- * - 값이 결측(키가 record에 없음, 즉 undefined)이면 원본 플레이스홀더를 그대로 남기고
- *   missing[]에 그 키를 담는다 — throw하지 않는다. 파이프라인이 행 단위로 실패 처리할 수 있도록
- *   (DESIGN §3, §4-3단계).
- * - 값이 빈 문자열("")인 것은 "결측"이 아니다 — 키는 존재하고 값만 비어 있는 정상 케이스로,
- *   빈 문자열로 치환되고 missing에 들어가지 않는다.
- * - 같은 키가 템플릿에 여러 번 나오면 missing에는 한 번만 담긴다(중복 제거).
- * - String.prototype.replace에 문자열을 넘기면 `$&`/`$1` 같은 패턴이 특수 해석되므로,
- *   치환값이 그대로 삽입되도록 반드시 함수 콜백으로 치환한다(이스케이프 불필요).
+ * Substitutes {{key}} placeholders with values.
+ * - If a value is missing (the key is not present in the record, i.e. undefined), the original
+ *   placeholder is left as-is and the key is added to missing[] — it does not throw, so the
+ *   pipeline can fail the row individually (DESIGN §3, §4 step 3).
+ * - An empty string ("") value is NOT "missing" — the key exists and only the value is empty,
+ *   a normal case; it is substituted with the empty string and not added to missing.
+ * - If the same key appears multiple times in the template, it is added to missing only once
+ *   (deduplicated).
+ * - Passing a string to String.prototype.replace specially interprets patterns like `$&`/`$1`,
+ *   so a function callback is used for substitution to ensure the replacement value is inserted
+ *   verbatim (no escaping needed).
  */
 export function renderTemplate(template: string, values: Record<string, string>): RenderResult {
   const missing: string[] = [];

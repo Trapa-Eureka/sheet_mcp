@@ -1,8 +1,8 @@
-// npm run build 마지막 단계 — tsc는 shebang을 보존하지 않으므로, 빌드된 bin 진입점들 최상단에
-// `#!/usr/bin/env node`를 붙여야 `node dist/server.js`/`npx sheet-mcp` 같은 실행이 된다
-// (T11, docs/TASKS.md). package.json의 bin 필드와 대상이 같아야 한다(AR-019 — sheet-mcp-recover
-// 추가). tsx/devDependencies 없이 순수 node로 실행 가능한지가 이 스크립트의 목적이라 tsx를 쓰지
-// 않고 plain Node ESM으로 작성한다.
+// Final step of npm run build — tsc doesn't preserve shebangs, so `#!/usr/bin/env node` must be
+// prepended to the top of each built bin entry point for `node dist/server.js`/`npx sheet-mcp`
+// style execution to work (T11, docs/TASKS.md). Targets must match package.json's bin field
+// (AR-019 — added sheet-mcp-recover). Since the point of this script is to be runnable with
+// plain Node, without tsx/devDependencies, it's written as plain Node ESM instead of using tsx.
 
 import { readFileSync, writeFileSync } from "node:fs";
 

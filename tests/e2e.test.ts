@@ -1,6 +1,6 @@
-// e2e-mock 테스트 (docs/TESTING.md §3) — MCP 서버를 실제 stdio 자식 프로세스로 띄우고
-// MCP SDK Client로 도구 4종을 호출한다. 서버 프로세스는 tests/support/e2eTestServer.ts로,
-// 실제 어댑터 대신 목만 주입하므로 네트워크 호출이 없다.
+// e2e-mock tests (docs/TESTING.md §3) — spawns the MCP server as a real stdio child process and
+// calls the 4 tools via the MCP SDK Client. The server process is tests/support/e2eTestServer.ts,
+// which injects only mocks instead of the real adapters, so there is no network access.
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import path from "node:path";
@@ -11,9 +11,9 @@ import { E2E_SHEET_ID } from "./support/e2eTestServer.js";
 const SERVER_SCRIPT = path.resolve(process.cwd(), "tests/support/e2eTestServer.ts");
 const TSX_BIN = path.resolve(process.cwd(), "node_modules/.bin/tsx");
 
-// StdioClientTransport 기본 env는 안전 목록만 상속하므로, tsx가 자식 프로세스에서 node/모듈을
-// 정상적으로 찾도록 부모 프로세스 env를 그대로 넘긴다(undefined 값은 Record<string,string>에
-// 넣을 수 없어 걸러낸다).
+// StdioClientTransport's default env only inherits a safe allowlist, so we pass the parent
+// process's env through as-is so tsx can properly find node/modules in the child process
+// (undefined values are filtered out since they can't go into a Record<string,string>).
 function parentEnv(): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
@@ -49,7 +49,7 @@ interface SendLogOutput {
   nextCursor?: string;
 }
 
-describe("e2e-mock: MCP stdio 서버 도구 4종", () => {
+describe("e2e-mock: MCP stdio server's 4 tools", () => {
   let client: Client;
   let transport: StdioClientTransport;
 
@@ -68,7 +68,7 @@ describe("e2e-mock: MCP stdio 서버 도구 4종", () => {
     await client.close();
   });
 
-  it("도구 4종이 등록되어 있다", async () => {
+  it("all 4 tools are registered", async () => {
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([
       "get_send_log",
@@ -78,7 +78,7 @@ describe("e2e-mock: MCP stdio 서버 도구 4종", () => {
     ]);
   });
 
-  it("read_rows로 filter_column/filter_value가 적용된 대상 행만 확인할 수 있다", async () => {
+  it("read_rows returns only target rows with filter_column/filter_value applied", async () => {
     const result = await client.callTool({
       name: "read_rows",
       arguments: { sheetId: E2E_SHEET_ID },
@@ -86,12 +86,13 @@ describe("e2e-mock: MCP stdio 서버 도구 4종", () => {
     expect(result.isError).toBeFalsy();
 
     const rows = result.structuredContent as ReadRowsOutput;
-    // 픽스처는 status=unpaid 1행, status=paid 1행 — filter_value=unpaid이므로 1행만 매칭된다.
+    // The fixture has 1 row with status=unpaid and 1 row with status=paid — since
+    // filter_value=unpaid, only 1 row matches.
     expect(rows.totalMatched).toBe(1);
     expect(rows.truncated).toBe(false);
   });
 
-  it("preview → send(SEND_MODE 미설정이라 dry-run) → get_send_log 시나리오", async () => {
+  it("preview → send (dry-run since SEND_MODE is unset) → get_send_log scenario", async () => {
     const preview = await client.callTool({
       name: "preview_messages",
       arguments: { sheetId: E2E_SHEET_ID },
@@ -101,8 +102,8 @@ describe("e2e-mock: MCP stdio 서버 도구 4종", () => {
     expect(previewResult.sent).toBe(1);
     expect(previewResult.failed).toBe(0);
 
-    // 이 e2e 서버 프로세스에는 SEND_MODE=live를 넘기지 않았으므로, confirm=true를 줘도
-    // 이중 안전장치(DESIGN §5)에 의해 실제로는 발송되지 않아야 한다.
+    // This e2e server process was not given SEND_MODE=live, so even with confirm=true, the
+    // dual safeguard (DESIGN §5) means it must not actually send.
     const send = await client.callTool({
       name: "send_notifications",
       arguments: { sheetId: E2E_SHEET_ID, confirm: true },
@@ -111,7 +112,7 @@ describe("e2e-mock: MCP stdio 서버 도구 4종", () => {
     const sendResult = send.structuredContent as SendNotificationsOutput;
     expect(sendResult.liveSend).toBe(false);
     expect(sendResult.notice).toContain("SEND_MODE=live");
-    expect(sendResult.sent).toBe(1); // dry-run 미리보기 상 "발송될" 행 수
+    expect(sendResult.sent).toBe(1); // the number of rows that "would be sent" per the dry-run preview
 
     const log = await client.callTool({
       name: "get_send_log",
@@ -119,12 +120,12 @@ describe("e2e-mock: MCP stdio 서버 도구 4종", () => {
     });
     expect(log.isError).toBeFalsy();
     const logResult = log.structuredContent as SendLogOutput;
-    // dry-run만 수행했으므로 실제 발송 기록은 하나도 없어야 한다.
+    // Only a dry-run was performed, so there must be zero actual send records.
     expect(logResult.entries).toHaveLength(0);
     expect(logResult.hasMore).toBe(false);
   });
 
-  it("존재하지 않는 sheetId는 isError:true와 함께 원인이 담긴 메시지를 반환한다", async () => {
+  it("a nonexistent sheetId returns isError:true with a message containing the cause", async () => {
     const result = await client.callTool({
       name: "read_rows",
       arguments: { sheetId: "no-such-sheet" },
