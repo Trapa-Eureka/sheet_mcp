@@ -43,6 +43,8 @@ npm run dev           # MCP 서버 stdio 실행 (.env 시크릿 필요 — 아�
 5. Claude Code에서는 이 레포를 열고 `/mcp`로 `sheet-mcp` 연결을 확인한다 (`.mcp.json` 커밋됨, `docs/DESIGN.md` §8).
 
 레포를 clone하지 않고 `npx sheet-mcp`로 바로 쓰는 방법도 준비 중이다(`docs/DESIGN.md` §8-B) —
+이 경로에서는 `.env` 파일 대신 `claude mcp add sheet-mcp -e GOOGLE_SERVICE_ACCOUNT_JSON=<절대경로> -e RESEND_API_KEY=... -e MAIL_FROM=... -- npx -y sheet-mcp`처럼
+`-e` 플래그로 환경변수를 직접 넘기는 걸 권장한다(이유는 §8-B 참고).
 **단 아직 `npm publish`를 하지 않아 지금은 동작하지 않는다.** 그 전까지는 위 clone 방식만 쓸 수 있다.
 
 ## 예시 시트 템플릿
