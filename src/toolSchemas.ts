@@ -37,12 +37,16 @@ const pipelineRowDetailSchema = z.object({
 });
 
 /** preview_messages / send_notifications가 공유하는 core/pipeline.ts PipelineResult 형태.
- * sent+failed+skipped+logFailed === details.length가 항상 성립한다(집계 불변식, GAP-002). */
+ * sent+failed+skipped+logFailed === details.length가 항상 성립한다(집계 불변식, GAP-002).
+ * totalMatched/truncated: 필터 통과 행이 MAX_PIPELINE_ROWS를 넘어 details가 잘렸는지
+ * (docs/ADVERSARIAL_REVIEW_004.md AR-022). */
 const pipelineResultShape = {
   sent: z.number(),
   failed: z.number(),
   skipped: z.number(),
   logFailed: z.number(),
+  totalMatched: z.number(),
+  truncated: z.boolean(),
   details: z.array(pipelineRowDetailSchema),
 };
 

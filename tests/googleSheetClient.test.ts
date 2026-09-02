@@ -209,4 +209,44 @@ describe("GoogleSheetClient", () => {
       }
     });
   });
+
+  describe("timeout (docs/ADVERSARIAL_REVIEW_004.md AR-023)", () => {
+    it("readRows: 응답이 영영 안 오는 Sheets API 호출도 timeoutMs 안에 명확한 에러로 끝난다", async () => {
+      const sheetsApi: SheetsApiLike = {
+        spreadsheets: {
+          values: {
+            // signal 인자가 없는 우리 SheetsApiLike 인터페이스 특성상, 목이 스스로 끝나지 않는 한
+            // 절대 안 끝난다 — withTimeout() race가 없으면 이 테스트 자체가 멈춘다.
+            get: vi.fn().mockImplementation(() => new Promise(() => {})),
+            update: vi.fn(),
+            batchUpdate: vi.fn(),
+          },
+        },
+      };
+      const client = new GoogleSheetClient({ sheetsApi, timeoutMs: 20 });
+
+      await expect(client.readRows("sheet-1", "customers")).rejects.toThrow(
+        /타임아웃 처리했습니다/,
+      );
+    });
+
+    it("writeStatus: batchUpdate가 영영 안 끝나도 timeoutMs 안에 명확한 에러로 끝난다", async () => {
+      const sheetsApi: SheetsApiLike = {
+        spreadsheets: {
+          values: {
+            get: vi.fn().mockResolvedValue({
+              data: { values: [["_send_status", "_sent_at", "_message_id", "_error"]] },
+            }),
+            update: vi.fn(),
+            batchUpdate: vi.fn().mockImplementation(() => new Promise(() => {})),
+          },
+        },
+      };
+      const client = new GoogleSheetClient({ sheetsApi, timeoutMs: 20 });
+
+      await expect(
+        client.writeStatus("sheet-1", "customers", [{ rowIndex: 2, sendStatus: "sent" }]),
+      ).rejects.toThrow(/타임아웃 처리했습니다/);
+    });
+  });
 });

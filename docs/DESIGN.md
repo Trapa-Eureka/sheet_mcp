@@ -233,7 +233,13 @@ renderTemplate(template: string, values: Record<string, string>): RenderResult
 `run(sheetId, opts: { dryRun: boolean })` 순서:
 
 1. `readConfig` → zod 파싱 (실패 시 어떤 키가 왜 틀렸는지 명시한 에러)
-2. `readRows` → `filter_column/value` 적용
+2. `readRows` → `filter_column/value` 적용 → 매칭된 행이 `MAX_PIPELINE_ROWS`(1000)를 넘으면:
+   - **dry-run**: 앞 1000행만 잘라서 미리보기하고 `totalMatched`/`truncated`로 실제로는 더 많다는
+     사실을 알린다(`read_rows`와 같은 정책).
+   - **live**: 일부만 조용히 보내는 부분 발송 사고를 피하기 위해 **발송을 아예 시작하지 않고**
+     명확한 에러로 중단한다(필터를 좁히거나 배치를 나누라는 안내 포함). provider.send()/claim() 등
+     어떤 부수효과도 발생하지 않는다(`docs/ADVERSARIAL_REVIEW_004.md` AR-022 — 대형/실수로 넓어진
+     시트 전체가 필터 없이 매칭되면 메모리 급증뿐 아니라 대량 오발송으로도 이어질 수 있었다).
 3. 행별 렌더링: 수신자 결측·이메일 형식 불량·템플릿 변수 결측 행은 `failed` 후보로 표시하고 계속 진행
    - `templateHash` = subject를 sha256, body를 sha256한 뒤 그 두 다이제스트를 이어붙여 다시 sha256한
      값의 앞 12자. subject/body 사이에 구분자 문자를 끼워 넣는 방식(과거 구현)은 그 구분자와 같은
@@ -255,9 +261,11 @@ renderTemplate(template: string, values: Record<string, string>): RenderResult
       전체를 중단시켰다). 이 행의 claim은 재시도가 자동으로는 안 풀릴 수 있어 사람의
       `forceReleaseStaleClaim()` 확인이 필요할 수 있다.
 6. `ensureStatusColumns` + `writeStatus` 일괄 write-back (§2 결측 정책, AR-014)
-7. 집계 반환: `{ sent, failed, skipped, logFailed, details[] }`. `sent_log_failed`는 `sent`/`failed`
-   어느 쪽 카운트에도 들어가지 않고 `logFailed`로 별도 집계된다 — `sent+failed+skipped+logFailed`는
-   항상 `details.length`와 같다(집계 불변식, `GAP-002`)
+7. 집계 반환: `{ sent, failed, skipped, logFailed, totalMatched, truncated, details[] }`.
+   `sent_log_failed`는 `sent`/`failed` 어느 쪽 카운트에도 들어가지 않고 `logFailed`로 별도
+   집계된다 — `sent+failed+skipped+logFailed`는 항상 `details.length`와 같다(집계 불변식,
+   `GAP-002`). `totalMatched`/`truncated`는 위 2단계의 `MAX_PIPELINE_ROWS` 절단 여부를 나타낸다
+   (`AR-022`).
 
 ## 5. MCP 도구 (src/server.ts)
 
@@ -299,12 +307,15 @@ renderTemplate(template: string, values: Record<string, string>): RenderResult
     즉시 에러를 던진다 — 음수를 잘못 넘기면 cutoff가 미래가 되어 방금 만든 최신 claim까지
     "오래됨"으로 오판해 삭제해버리는 사고를 막는다(InMemorySendLog와 공통 검증 함수
     `assertValidStaleClaimThreshold()`를 공유). 이 내부 API를 사람이 직접 안전하게 쓸 수 있도록
-    `npm run recover:stale-claim`(`scripts/recoverStaleClaim.ts`) 운영 CLI를 제공한다: 기본은
-    `--confirm` 없이 DB를 **readonly로 열어** 조회만 하고, 5분 미만의 `--older-than-ms`는
-    `--i-understand-the-risk` 없이 거부하며, 모든 조회·회수 실행을 `data/recovery-audit.log`(JSON
-    Lines, `RECOVERY_AUDIT_LOG_PATH`로 재지정 가능)에 남긴다. MCP 도구로는 여전히 노출하지 않는다
-    (§3 SendLog 인터페이스 주석 참고 — 자율 에이전트가 "발송됐을 수도 있는" claim을 스스로
-    회수 가능하게 만들면 안 된다는 원칙은 그대로다).
+    `src/cli/recoverStaleClaim.ts` 운영 CLI를 제공한다 — 레포를 clone해 개발 중이면
+    `npm run recover:stale-claim --`, `npx sheet-mcp`로 설치했다면 `npx sheet-mcp-recover`로 실행한다
+    (두 번째 공개 `bin`, `docs/ADVERSARIAL_REVIEW_004.md` AR-019 — 예전엔 `scripts/`에 있어서
+    npm 패키지에 아예 포함되지 않았고, README가 공식 절차로 안내하는데도 `npx`로 설치한 사람은
+    실행할 방법이 없었다). 기본은 `--confirm` 없이 DB를 **readonly로 열어** 조회만 하고, 5분
+    미만의 `--older-than-ms`는 `--i-understand-the-risk` 없이 거부하며, 모든 조회·회수 실행을
+    `data/recovery-audit.log`(JSON Lines, `RECOVERY_AUDIT_LOG_PATH`로 재지정 가능)에 남긴다. MCP
+    도구로는 여전히 노출하지 않는다(§3 SendLog 인터페이스 주석 참고 — 자율 에이전트가 "발송됐을
+    수도 있는" claim을 스스로 회수 가능하게 만들면 안 된다는 원칙은 그대로다).
 
 `npm run dev`/`npm run smoke`는 시작 시 `dotenv`로 `.env`를 로드한다(이미 설정된 실제 프로세스
 환경변수는 덮어쓰지 않음). `createServer()`를 단독 import하는 테스트 경로에서는 절대 로드하지

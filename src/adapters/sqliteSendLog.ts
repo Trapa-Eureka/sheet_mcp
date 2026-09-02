@@ -78,7 +78,7 @@ export type SchemaVersion = "none" | "v1_record" | "v2_claim";
 
 // T6(record 전용) 스키마와 GAP-001 재설계(claim/commit/release) 스키마를 컬럼 존재 여부로 구분한다.
 // PRAGMA table_info는 파라미터 바인딩을 지원하지 않지만 리터럴이 없는 고정 SQL이라 인젝션 위험이
-// 없다. scripts/recoverStaleClaim.ts가 read-only 조회에도 그대로 재사용한다(STATUS-GAP-003).
+// 없다. src/cli/recoverStaleClaim.ts가 read-only 조회에도 그대로 재사용한다(STATUS-GAP-003).
 export function detectSchemaVersion(db: Database.Database): SchemaVersion {
   const tableExists = db
     .prepare<[], { name: string }>(

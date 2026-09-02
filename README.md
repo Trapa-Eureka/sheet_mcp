@@ -8,6 +8,10 @@
 
 ## 문서 맵
 
+> 아래 상대 경로는 저장소를 clone했거나 [GitHub 저장소](https://github.com/Trapa-Eureka/sheet_mcp)를
+> 보고 있을 때만 유효하다 — `npx sheet-mcp`로 설치한 패키지에는 `docs/`가 포함되지 않는다
+> (docs/ADVERSARIAL_REVIEW_004.md AR-027).
+
 | 문서               | 내용                                                  | 읽는 시점                              |
 | ------------------ | ----------------------------------------------------- | -------------------------------------- |
 | `CLAUDE.md`        | 에이전트 스티어링 파일 — 스택, 명령어, 규칙, 가드레일 | 모든 에이전트 세션 시작 시 (자동 로드) |
@@ -70,9 +74,11 @@ npm run dev           # MCP 서버 stdio 실행 (.env 시크릿 필요 — 아�
   (원본은 `send_log_v1_backup_*` 테이블로 보존). 사람이 따로 할 일은 없다. 상세 동작은
   `docs/DESIGN.md` §6.
 - **claim이 오래 걸려 있을 때(정상 종료 없이 프로세스가 죽은 경우 등)**: 절대 DB 파일을 직접
-  손대지 말고 `npm run recover:stale-claim -- --db ./data/sendlog.db --sheet-id <id> --tab <tab> --row-key <key> --template-hash <hash>`
-  로 먼저 조회한다(기본은 읽기 전용, 아무 것도 지우지 않음). 회수하려면 `--older-than-ms`와
-  `--confirm`을 추가한다. 자세한 옵션과 안전장치는 `scripts/recoverStaleClaim.ts` 상단 주석과
+  손대지 말고 먼저 조회한다 — 레포 clone 개발 환경이면
+  `npm run recover:stale-claim -- --db ./data/sendlog.db --sheet-id <id> --tab <tab> --row-key <key> --template-hash <hash>`,
+  `npx sheet-mcp`로 설치했다면 `npx sheet-mcp-recover --db ... --sheet-id ... --tab ... --row-key ... --template-hash ...`
+  (같은 인자, 기본은 읽기 전용이라 아무 것도 지우지 않음). 회수하려면 `--older-than-ms`와
+  `--confirm`을 추가한다. 자세한 옵션과 안전장치는 `src/cli/recoverStaleClaim.ts` 상단 주석과
   `docs/DESIGN.md` §6을 참고.
 
 ## 상태

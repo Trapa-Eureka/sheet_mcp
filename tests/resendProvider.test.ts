@@ -144,4 +144,26 @@ describe("ResendEmailProvider", () => {
     expect(result.error).toMatch(/channel=email만 지원/);
     expect(fetchImpl).not.toHaveBeenCalled();
   });
+
+  it(
+    "docs/ADVERSARIAL_REVIEW_004.md AR-023: 응답이 영영 안 오는 fetch도 timeoutMs 안에 " +
+      "실패 SendResult로 끝난다(예외를 던지지 않음) — 재시도 전 대시보드 확인을 안내한다",
+    async () => {
+      // signal을 무시하는 순수 hang — AbortSignal.timeout()만으로는 이 목을 멈출 수 없다는 것 자체가
+      // withTimeout() race가 필요한 이유다.
+      const fetchImpl = vi.fn().mockImplementation(() => new Promise<Response>(() => {}));
+      const provider = new ResendEmailProvider({
+        apiKey: "re_test_key",
+        from: "notify@example.invalid",
+        fetchImpl,
+        timeoutMs: 20,
+      });
+
+      const result = await provider.send(MSG);
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toMatch(/타임아웃 처리했습니다/);
+      expect(result.error).toMatch(/Resend 대시보드/);
+    },
+  );
 });

@@ -33,6 +33,8 @@ interface PipelineOutput {
   failed: number;
   skipped: number;
   logFailed: number;
+  totalMatched: number;
+  truncated: boolean;
   details: unknown[];
 }
 

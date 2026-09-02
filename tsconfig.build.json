@@ -1,6 +1,9 @@
 // npm 패키지 배포용 빌드 전용 설정(T11, docs/TASKS.md). 개발/테스트는 여전히 tsx/vitest가 tsconfig.json을
 // 그대로 쓴다 — 이 파일은 `npm run build`에서만 쓰이고, `src/`만 `dist/`로 컴파일한다(tests/scripts는
 // 배포판에 포함하지 않는다).
+// src/mocks는 제외한다(docs/ADVERSARIAL_REVIEW_004.md AR-026) — 서버 런타임이 import하지 않는
+// 테스트 전용 코드가 공개 tarball에 불필요하게 실리는 것을 막는다. tests/는 여전히 src/mocks의
+// .ts 원본을 tsx로 직접 import하므로(dist가 아니라) 테스트에는 영향이 없다.
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
@@ -8,5 +11,6 @@
     "outDir": "dist",
     "rootDir": "src"
   },
-  "include": ["src"]
+  "include": ["src"],
+  "exclude": ["src/mocks"]
 }

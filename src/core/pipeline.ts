@@ -48,8 +48,22 @@ export interface PipelineResult {
    * sent+failed+skipped+logFailed는 항상 details.length와 같다(집계 불변식,
    * docs/ADVERSARIAL_REVIEW_003_RESOLUTION_GAPS.md GAP-002). */
   logFailed: number;
+  /** filter_column/filter_value 적용 후 실제로 매칭된 전체 행 수 (details.length보다 클 수 있음 —
+   * MAX_PIPELINE_ROWS를 넘겨 잘렸을 때. docs/ADVERSARIAL_REVIEW_004.md AR-022). */
+  totalMatched: number;
+  /** totalMatched가 MAX_PIPELINE_ROWS를 넘어 details가 잘렸는지. dry-run에서만 true가 될 수 있다 —
+   * live에서 이 한도를 넘으면 잘라서 일부만 보내는 대신 run() 자체가 에러를 던진다(아래 참고). */
+  truncated: boolean;
   details: PipelineRowDetail[];
 }
+
+/** preview/send가 한 번에 처리할 수 있는 최대 행 수(필터 적용 후 기준) — docs/DESIGN.md §6
+ * "예시 시트 템플릿"의 fixtures/sheets/large-1000.json(1000행) 규모에 맞춘 보수적 상한이다
+ * (docs/ADVERSARIAL_REVIEW_004.md AR-022). Google Sheets 읽기 자체나 시트 크기를 제한하지는
+ * 않지만, 이 서버가 한 번의 실행에서 렌더링·발송·응답 직렬화할 행 수를 여기서 막아 대형/실수로
+ * 넓어진 시트가 메모리 급증이나 대량 오발송으로 이어지는 것을 방지한다. 환경변수로 노출하지
+ * 않는다 — 노출하면 사람이 실수로 늘려서 이 안전장치 자체를 우회할 수 있다. */
+export const MAX_PIPELINE_ROWS = 1000;
 
 /**
  * subject+body **원본** 템플릿(렌더 전)의 sha256 앞 12자 — DESIGN §4-4단계.
@@ -135,7 +149,23 @@ export class SendPipeline {
 
     // 2. 행 읽기 + filter_column/filter_value 적용
     const allRows = await this.deps.sheetClient.readRows(sheetId, config.dataTab);
-    const rows = applyFilter(allRows, config.filterColumn, config.filterValue);
+    const matchedRows = applyFilter(allRows, config.filterColumn, config.filterValue);
+    const totalMatched = matchedRows.length;
+    const truncated = totalMatched > MAX_PIPELINE_ROWS;
+
+    // AR-022: 필터를 통과한 행이 MAX_PIPELINE_ROWS를 넘으면 live에서는 일부만 조용히 보내는 대신
+    // 발송을 아예 시작하지 않고 안전하게 중단한다 — "몇 명은 받고 몇 명은 못 받았는지 알 수 없는"
+    // 부분 발송 사고보다, 아무도 못 받고 사람이 필터를 좁혀서 다시 시도하는 쪽이 훨씬 안전하다.
+    // dry-run은 상태를 바꾸지 않으므로 잘라서 미리보기만 보여주고 totalMatched/truncated로
+    // 실제로는 더 많다는 사실을 알린다(read_rows와 동일한 정책).
+    if (truncated && !opts.dryRun) {
+      throw new Error(
+        `발송 대상이 ${String(totalMatched)}행으로 한도(${String(MAX_PIPELINE_ROWS)}행)를 ` +
+          `초과합니다. notify_config의 filter_column/filter_value로 대상을 좁히거나, 여러 배치로 ` +
+          "나눠 실행하세요. 안전을 위해 일부만 발송하지 않고 전체 실행을 중단했습니다(발송 없음).",
+      );
+    }
+    const rows = truncated ? matchedRows.slice(0, MAX_PIPELINE_ROWS) : matchedRows;
 
     const templateHash = computeTemplateHash(config.subjectTemplate, config.bodyTemplate);
 
@@ -153,7 +183,7 @@ export class SendPipeline {
         }
       }
       // dryRun이면 여기서 결과(발송될 목록 미리보기)만 반환 — provider/sendLog/시트 쓰기 전부 없음
-      return this.summarize(workingRows, true);
+      return this.summarize(workingRows, true, totalMatched, truncated);
     }
 
     // 4~6 (live): 행마다 "예약(claim) → 발송 → 확정(commit)/해제(release)"를 하나씩 끝까지 완결한
@@ -171,8 +201,8 @@ export class SendPipeline {
     const updates = workingRows.map((row) => toStatusUpdate(row, nowIso));
     await this.deps.sheetClient.writeStatus(sheetId, config.dataTab, updates);
 
-    // 8. 집계 반환
-    return this.summarize(workingRows, false);
+    // 8. 집계 반환 (live에서는 위에서 이미 truncated=false를 강제했다)
+    return this.summarize(workingRows, false, totalMatched, truncated);
   }
 
   private planRow(row: SheetRow, config: NotifyConfig): WorkingRow {
@@ -351,7 +381,12 @@ export class SendPipeline {
     }
   }
 
-  private summarize(rows: WorkingRow[], dryRun: boolean): PipelineResult {
+  private summarize(
+    rows: WorkingRow[],
+    dryRun: boolean,
+    totalMatched: number,
+    truncated: boolean,
+  ): PipelineResult {
     const details: PipelineRowDetail[] = rows.map((row) => ({
       rowIndex: row.rowIndex,
       rowKey: row.rowKey,
@@ -368,6 +403,8 @@ export class SendPipeline {
       failed: details.filter((d) => d.status === "failed").length,
       skipped: details.filter((d) => d.status === "skipped_duplicate").length,
       logFailed: details.filter((d) => d.status === "sent_log_failed").length,
+      totalMatched,
+      truncated,
       details,
     };
   }
