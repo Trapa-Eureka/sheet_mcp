@@ -1,7 +1,7 @@
 {
   "name": "sheet-mcp",
-  "version": "0.1.0",
-  "description": "구글시트를 DB로 쓰는 필리핀 SME용 알림 발송 MCP 서버 (v0.1: 이메일, v0.2: SMS 예정)",
+  "version": "0.1.1",
+  "description": "An MCP server for sending notifications to Philippine SMEs, using a Google Sheet as a database (v0.1: email, v0.2: SMS planned)",
   "keywords": [
     "mcp",
     "model-context-protocol",

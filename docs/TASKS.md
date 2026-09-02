@@ -192,6 +192,17 @@ Dependency graph: `T0 → T1 → {A: T2→T3, B: T4, C: T5, D: T6} → T7 → T8
     second run sent successfully to a recipient other than the account owner, confirming the sandbox
     restriction was fully lifted.
 
+### T14 follow-up — Republished as `0.1.1` to refresh the npm-hosted README · Status: DONE(2026-09-02)
+
+- npm has no way to edit the README of an already-published version — refreshing what shows on the
+  package page requires publishing a new version. This was a docs-only change (the full English
+  translation, see the commit translating all project docs), so it's a patch bump per semver:
+  `0.1.0` → `0.1.1`. No code changes; `package.json.description` was also translated to English while
+  bumping the version, since it's user-facing text on the npm page.
+- Completion record (no secrets): published `sheet-mcp@0.1.1` to the public npm registry, tag `latest`,
+  after separate explicit user approval. Verified `dist-tags.latest = "0.1.1"` via the registry API and
+  that the package page's README reflects the English version.
+
 ---
 
 ## v0.2 queue (do not start — see the SPEC roadmap)
