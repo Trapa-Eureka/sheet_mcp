@@ -1,14 +1,14 @@
 # DESIGN — sheet_mcp v0.1
 
-이 문서가 구현의 진실의 원천이다. 코드와 다르면 이 문서를 기준으로 코드를 고치거나, 설계 변경이 필요하면 이 문서를 먼저 수정한다.
+This document is the source of truth for the implementation. If the code differs from it, fix the code to match this document; if a design change is needed, update this document first.
 
-## 1. 아키텍처
+## 1. Architecture
 
 ```
 Claude Code / Claude Desktop
         │  (MCP stdio)
         ▼
-  src/server.ts ──── MCP 도구 4종 등록만 담당
+  src/server.ts ──── responsible only for registering the 4 MCP tools
         │
         ▼
   core/pipeline.ts (SendPipeline)
@@ -18,59 +18,69 @@ SheetClient TemplateEngine NotificationProvider SendLog
    │                        │                    │
    ├ adapters/googleSheetClient (googleapis)     ├ adapters/sqliteSendLog
    ├ mocks/inMemorySheetClient  ├ adapters/resendProvider
-                                ├ adapters/smtpProvider (옵션)
-                                ├ adapters/semaphoreSmsProvider (v0.2 스텁)
+                                ├ adapters/smtpProvider (optional)
+                                ├ adapters/semaphoreSmsProvider (v0.2 stub)
                                 └ mocks/mockNotificationProvider
 ```
 
-원칙: `core/`는 인터페이스만 알고 외부 IO를 모른다. 어댑터 교체(이메일→SMS)가 파이프라인 코드 변경 없이 가능해야 한다.
+Principle: `core/` knows only interfaces and nothing about external IO. Swapping an adapter (email → SMS) must be possible without changing pipeline code.
 
-## 2. 시트 규약
+## 2. Sheet Conventions
 
-하나의 스프레드시트에 **데이터 탭**과 **`notify_config` 탭**을 둔다.
+A single spreadsheet has a **data tab** and a **`notify_config` tab**.
 
-### notify_config 탭 (A열=키, B열=값)
+### notify_config tab (column A = key, column B = value)
 
-| 키                 | 필수     | 예시                                                | 설명                                              |
-| ------------------ | -------- | --------------------------------------------------- | ------------------------------------------------- |
-| `data_tab`         | ✓        | `customers`                                         | 데이터 탭 이름                                    |
-| `id_column`        | ✓        | `customer_id`                                       | 행 식별 컬럼 (멱등성 키)                          |
-| `recipient_column` | ✓        | `email`                                             | 수신자 주소 컬럼                                  |
-| `channel`          | ✓        | `email`                                             | v0.1은 `email`만 허용, `sms`는 명시적 미지원 에러 |
-| `subject_template` | ✓(email) | `[{{shop}}] 결제 안내`                              | 제목 템플릿                                       |
-| `body_template`    | ✓        | `{{name}}님, {{amount}} 결제 기한은 {{due}}입니다.` | 본문 템플릿                                       |
-| `filter_column`    | –        | `status`                                            | 발송 대상 필터 컬럼                               |
-| `filter_value`     | –        | `unpaid`                                            | 해당 값과 일치하는 행만 발송                      |
+| Key                | Required  | Example                                                          | Description                                                            |
+| ------------------ | --------- | ---------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `data_tab`         | ✓         | `customers`                                                      | Data tab name                                                          |
+| `id_column`        | ✓         | `customer_id`                                                    | Row identifier column (idempotency key)                                |
+| `recipient_column` | ✓         | `email`                                                          | Recipient address column                                               |
+| `channel`          | ✓         | `email`                                                          | v0.1 allows only `email`; `sms` raises an explicit not-supported error |
+| `subject_template` | ✓ (email) | `[{{shop}}] Payment Notice`                                      | Subject template                                                       |
+| `body_template`    | ✓         | `Dear {{name}}, the payment due date for {{amount}} is {{due}}.` | Body template                                                          |
+| `filter_column`    | –         | `status`                                                         | Filter column for send targets                                         |
+| `filter_value`     | –         | `unpaid`                                                         | Only rows matching this value are sent                                 |
 
-### 데이터 탭
+### Data tab
 
-- 1행은 헤더. 헤더명이 곧 템플릿 변수명이다.
-- 파이프라인이 없으면 **상태 컬럼 4개를 헤더 끝에 추가**하고 이후 그 컬럼만 갱신한다:
-  `_send_status`(`sent`/`failed`/`skipped_duplicate`/`sent_log_failed`), `_sent_at`(ISO 8601), `_message_id`, `_error`
-  - `sent_log_failed`: 실제 발송(provider)은 성공했지만 SendLog에 그 사실을 기록하는 데 실패한 상태.
-    "발송은 됐다"는 사실 자체가 확정이라 `failed`(재시도 가능)로 두면 재발송 사고가 나므로 별도로 분리한다
-    (docs/ADVERSARIAL_REVIEW_003.md AR-013). 사람이 SendLog와 이 행을 수동으로 확인해야 한다.
-- 사용자 데이터 컬럼은 절대 쓰지 않는다.
-- 상태 컬럼 3가지 값의 결측 처리 정책(AR-014): `sent`가 되면 과거 `_error`는 지운다. `failed`가 되면
-  과거 `_sent_at`/`_message_id`는 **보존**한다(그 행이 예전에 실제로 발송된 적 있다는 감사 기록은
-  새 템플릿의 실패 시도로 지워지지 않는다). `skipped_duplicate`는 아무 것도 건드리지 않는다.
-- **정책 결정(STATUS-GAP-004, GAP-005 후속)**: 위 보존 정책 때문에 한 행에 `_send_status=failed`와
-  과거 성공의 `_message_id`/`_sent_at`이 동시에 남을 수 있다. 4개 상태 컬럼만 보고 "이 행이 지금
-  성공 상태인지"를 판단하면 착각할 수 있으므로, 다음을 확정된 계약으로 둔다(위 세 옵션 중
-  "현재 혼합 정책 유지 + 계약 명확화"를 선택):
-  - `_send_status`는 **항상 가장 최근 실행(마지막 시도)** 의 결과만 나타낸다. `sent`/`sent_log_failed`
-    일 때만 "지금 발송된 상태"로 해석해야 하고, `failed`/`skipped_duplicate`일 때 `_message_id`/
-    `_sent_at`이 채워져 있어도 **그건 과거 시도의 감사 기록이지 이번 실행이 성공했다는 뜻이 아니다**.
-  - 시트만 보고 자동화(다른 스크립트, 사람의 리포트)를 만들 때는 반드시 `_send_status`만으로
-    성공/실패를 판정해야 한다. `_message_id`/`_sent_at`이 값을 가진다는 사실만으로 "발송 성공"을
-    추론하면 안 된다.
-  - "이 행/템플릿 조합이 과거에 실제로 발송된 적이 있는가"가 필요하면 시트가 아니라
-    `SendLog.wasSent()`/`list()`(get_send_log MCP 도구)를 조회해야 한다 — SendLog가 진실의
-    원천이고, 시트 상태 컬럼은 사람이 보기 위한 스냅샷일 뿐이다.
-  - 시트 스키마(컬럼 4개)를 "마지막 시도"/"마지막 성공" 2세트로 분리하는 안(옵션 B)은 채택하지
-    않는다 — 기존 시트 사용자에게 마이그레이션 부담을 주는 변경이라 v0.1에서는 보류한다.
+- Row 1 is the header. Header names are the template variable names.
+- If the pipeline doesn't find them, it **appends 4 status columns to the end of the header** and
+  thereafter updates only those columns:
+  `_send_status` (`sent`/`failed`/`skipped_duplicate`/`sent_log_failed`), `_sent_at` (ISO 8601),
+  `_message_id`, `_error`
+  - `sent_log_failed`: a state where the actual send (provider) succeeded, but recording that fact
+    in SendLog failed. Since the fact that "the send happened" is itself settled, leaving it as
+    `failed` (retryable) would cause a duplicate-send accident, so it is kept as a separate state
+    (docs/ADVERSARIAL_REVIEW_003.md AR-013). A human must manually check SendLog and this row.
+- User data columns are never written to.
+- Missing-value handling policy for the status columns across the 3 outcomes (AR-014): when a row
+  becomes `sent`, the previous `_error` is cleared. When it becomes `failed`, the previous
+  `_sent_at`/`_message_id` are **preserved** (the audit record that this row was actually sent
+  before is not erased by a failed attempt with a new template). `skipped_duplicate` touches
+  nothing.
+- **Policy decision (STATUS-GAP-004, follow-up to GAP-005)**: because of the preservation policy
+  above, a single row can end up with `_send_status=failed` alongside the `_message_id`/`_sent_at`
+  from a past success at the same time. Judging "whether this row is currently in a success state"
+  from the 4 status columns alone can be misleading, so the following is fixed as the settled
+  contract (of the three options above, "keep the current mixed policy + clarify the contract" was
+  chosen):
+  - `_send_status` **always represents only the result of the most recent run (the last
+    attempt)**. It should be interpreted as "currently in a sent state" only when it is
+    `sent`/`sent_log_failed`; even if `_message_id`/`_sent_at` are populated while it is
+    `failed`/`skipped_duplicate`, **that is an audit record of a past attempt, not a sign that
+    this run succeeded**.
+  - When building automation (another script, a human's report) that reads only the sheet,
+    success/failure must be judged solely from `_send_status`. The mere fact that
+    `_message_id`/`_sent_at` hold a value must not be used to infer "the send succeeded".
+  - When you need to know "has this row/template combination actually been sent before," query
+    `SendLog.wasSent()`/`list()` (the get_send_log MCP tool), not the sheet — SendLog is the
+    source of truth, and the sheet's status columns are only a snapshot for humans to view.
+  - The proposal (option B) to split the sheet schema (4 columns) into two sets — "last attempt"
+    and "last success" — is not adopted; since it would impose a migration burden on existing
+    sheet users, it is deferred for v0.1.
 
-## 3. 핵심 인터페이스 (TS 시그니처)
+## 3. Core Interfaces (TS Signatures)
 
 ```ts
 // core/types.ts
@@ -81,11 +91,11 @@ export interface SheetRow {
 
 export type SendStatus = "sent" | "failed" | "skipped_duplicate" | "sent_log_failed";
 
-// writeStatus가 시트에 반영하는 상태 컬럼 4개(§2)를 행 단위로 표현.
-// sentAt/messageId/error는 3단계 값이다(AR-014):
-// - undefined(필드 생략) = 그 컬럼을 건드리지 않는다.
-// - string = 그 값으로 덮어쓴다.
-// - null = 명시적으로 지운다(빈 문자열로).
+// Represents, per row, the 4 status columns (§2) that writeStatus reflects onto the sheet.
+// sentAt/messageId/error are 3-state values (AR-014):
+// - undefined (field omitted) = leave that column untouched.
+// - string = overwrite with that value.
+// - null = explicitly clear it (to an empty string).
 export interface StatusUpdate {
   rowIndex: number;
   sendStatus: SendStatus;
@@ -94,8 +104,9 @@ export interface StatusUpdate {
   error?: string | null;
 }
 
-// SendLog에는 이 두 상태만 저장된다. failed/skipped_duplicate/sent_log_failed는 시트에만 그
-// 실행의 결과로 기록되고 SendLog에는 남지 않는다 — 시트용 SendStatus와 분리하는 이유다
+// SendLog stores only these two states. failed/skipped_duplicate/sent_log_failed are recorded
+// only on the sheet as the result of that run and are not kept in SendLog — this is why it is
+// kept separate from the sheet's SendStatus
 // (docs/ADVERSARIAL_REVIEW_003_RESOLUTION_GAPS.md GAP-001/002).
 export type SendLogEntryStatus = "claimed" | "sent";
 
@@ -126,58 +137,65 @@ export interface NotificationProvider {
   send(msg: OutboundMessage): Promise<SendResult>;
 }
 
-// SqliteSendLog의 unique 키(§6: sheet_id, tab, row_key, template_hash)와 1:1 대응.
+// Corresponds 1:1 to SqliteSendLog's unique key (§6: sheet_id, tab, row_key, template_hash).
 export interface SendLogEntry {
   sheetId: string;
   tab: string;
   rowKey: string;
   templateHash: string;
-  sendStatus: SendLogEntryStatus; // "claimed" | "sent" 뿐
-  sentAt: string; // claimed면 claim된 시각, sent면 확정(commit)된 시각
+  sendStatus: SendLogEntryStatus; // only "claimed" | "sent"
+  sentAt: string; // if claimed, the time it was claimed; if sent, the time it was finalized (committed)
   messageId?: string;
 }
 
 export interface SendLogListOptions {
-  limit?: number; // 생략 시 200, 최대 1000 (AR-015)
-  cursor?: string; // 이전 list() 결과의 nextCursor — 다음(더 오래된) 페이지 (GAP-006)
+  limit?: number; // 200 if omitted, max 1000 (AR-015)
+  cursor?: string; // the nextCursor from a previous list() result — the next (older) page (GAP-006)
 }
 
-// hasMore/nextCursor는 limit+1개를 조회해 계산한 정확한 값이다 — "entries.length===limit이면 더
-// 있다고 추측"하는 근사치가 아니다(GAP-006, 경계값에서 부정확했던 예전 방식).
+// hasMore/nextCursor are exact values computed by fetching limit+1 entries — not an approximation
+// that "guesses there are more if entries.length===limit" (GAP-006, the previous approach, which
+// was inaccurate at boundary values).
 export interface SendLogListResult {
   entries: SendLogEntry[];
   hasMore: boolean;
-  nextCursor?: string; // hasMore===true일 때만 존재
+  nextCursor?: string; // exists only when hasMore===true
 }
 
-// claim()의 결과. claimed===true일 때만 token이 존재하며 commit()/release()에 그대로 넘겨야 한다 —
-// 만료된 claim을 사람이 forceReleaseStaleClaim()으로 회수한 뒤 같은 키가 다시 claim되면 새
-// token이 발급되므로, 원래 시도(좀비 프로세스 등)가 뒤늦게 깨어나 옛 token으로 commit/release를
-// 불러도 새 claim을 건드리지 못한다(GAP-001).
+// The result of claim(). token exists only when claimed===true, and must be passed through as-is
+// to commit()/release() — when a human reclaims an expired claim via forceReleaseStaleClaim() and
+// the same key is claimed again, a new token is issued, so if the original attempt (e.g. a zombie
+// process) wakes up late and calls commit/release with the old token, it cannot touch the new
+// claim (GAP-001).
 export interface ClaimResult {
   claimed: boolean;
   token?: string;
 }
 
-// claim/commit/release 3단계 + 소유권 토큰 + 만료 기반 수동 복구 — AR-011(같은 배치·동시 실행
-// 중복 발송)/AR-013(발송 성공 후 로컬 기록 실패)/GAP-001(중단된 claim의 영구 방치) 대응.
-// 예전 record()는 "먼저 전부 wasSent() 확인 → 나중에 전부 발송"이라는 배치 구조상, 같은 rowKey가
-// 한 배치에 두 번 있거나 다른 프로세스가 동시에 실행되면 두 곳 다 wasSent=false를 보고 실제로
-// 중복 발송될 수 있었다(TOCTOU). claim()이 "확인"과 "예약"을 원자적 단일 연산으로 묶어 이 틈을
-// 없앤다. SqliteSendLog는 claim()을 UNIQUE 제약이 있는 컬럼에 대한 INSERT로 구현해 여러 프로세스가
-// 같은 DB 파일을 봐도 원자성이 유지된다.
+// The 3-step claim/commit/release + ownership token + expiration-based manual recovery — a
+// response to AR-011 (duplicate sends from the same batch / concurrent runs), AR-013 (local
+// record failure after a successful send), and GAP-001 (a stalled claim being permanently
+// abandoned).
+// The old record() had a batch structure of "first check wasSent() for everything → then send
+// everything," so if the same rowKey appeared twice in one batch, or another process ran
+// concurrently, both places could see wasSent=false and actually cause a duplicate send (TOCTOU).
+// claim() closes this gap by combining "check" and "reserve" into a single atomic operation.
+// SqliteSendLog implements claim() as an INSERT into a column with a UNIQUE constraint, so
+// atomicity holds even when multiple processes look at the same DB file.
 //
-// claim 직후(commit/release 전) 프로세스가 죽으면 그 claim은 "claimed" 상태로 영구히 남는다 —
-// 자동으로 "sent"도, 자동으로 재사용 가능으로도 되지 않는다(실제로 발송됐는지 알 수 없어서다).
-// list()에서 sendStatus="claimed"로 그대로 보이므로 운영자가 발견할 수 있고, 충분히 오래됐다고
-// 판단되면 forceReleaseStaleClaim()으로 **명시적으로만** 회수한다 — 자동 만료·자동 재사용은
-// 하지 않는다. 이 복구 함수는 MCP 도구로는 노출하지 않는다(자율 에이전트가 "발송됐을 수도 있는"
-// 상태를 스스로 재사용 가능하게 만드는 건 안전하지 않다 — 사람이 직접 검토 후 스크립트/REPL로
-// 호출하는 것을 전제한다).
+// If the process dies right after a claim (before commit/release), that claim remains
+// permanently in the "claimed" state — it does not automatically become "sent," nor does it
+// automatically become reusable (because it's unknown whether it was actually sent). Since
+// list() shows it as-is with sendStatus="claimed", an operator can discover it, and if it is
+// judged old enough, it is reclaimed **only explicitly** via forceReleaseStaleClaim() — there is
+// no automatic expiration or automatic reuse. This recovery function is not exposed as an MCP
+// tool (it is not safe to let an autonomous agent make a state that "may have been sent" reusable
+// on its own — this presumes a human reviews it directly and calls it via a script/REPL).
 export interface SendLog {
-  // claimed=true면 이 호출자가 유일하게 발송을 시도해도 됨(예약 성공) — 반환된 token을 반드시
-  // commit() 또는 release()에 넘겨야 한다. claimed=false면 이미 선점됨(claimed든 sent든) →
-  // 발송하지 말고 skipped_duplicate 처리.
+  // If claimed=true, this caller is the sole one permitted to attempt the send (reservation
+  // succeeded) — the returned token must be passed to commit() or release(). If claimed=false,
+  // it has already been claimed (whether claimed or sent) → do not send, treat as
+  // skipped_duplicate.
   claim(
     sheetId: string,
     tab: string,
@@ -185,8 +203,9 @@ export interface SendLog {
     templateHash: string,
     claimedAt: string,
   ): ClaimResult;
-  // claim()이 발급한 token과 일치하고 **아직 commit되지 않았을 때만** 예약을 최종 발송 기록으로
-  // 확정한다(claimed→sent는 한 번만 일어나야 하는 전이). token 불일치든 이미 commit됐든 에러.
+  // Finalizes the reservation into the final send record only when the token matches the one
+  // issued by claim() **and it has not yet been committed** (claimed→sent must happen only
+  // once). Errors on either a token mismatch or an already-committed record.
   commit(
     sheetId: string,
     tab: string,
@@ -196,14 +215,17 @@ export interface SendLog {
     sentAt: string,
     messageId: string | undefined,
   ): void;
-  // claim()이 발급한 token과 일치하고 **아직 commit되지 않았을 때만** 예약을 해제한다(재시도
-  // 가능해짐). token이 불일치하거나 이미 commit(확정)된 기록이면 조용히 무시한다 — 확정된
-  // 기록은 release()로도 절대 지워지지 않는다(재검증 중 발견·강화됨: 이 committed 체크가
-  // 없으면 commit 성공 후 release가 잘못 불렸을 때 방금 확정한 발송 기록이 통째로 사라져
-  // wasSent()가 false가 되고 재발송이 가능해지는 위험이 있었다).
+  // Releases the reservation (making it retryable) only when the token matches the one issued by
+  // claim() **and it has not yet been committed**. If the token doesn't match, or the record is
+  // already committed (finalized), it is silently ignored — a finalized record can never be
+  // erased by release() either (found and hardened during re-verification: without this
+  // committed check, if release() were mistakenly called after a successful commit, the
+  // just-finalized send record would be wiped out entirely, making wasSent() return false and
+  // creating the risk of a duplicate send).
   release(sheetId: string, tab: string, rowKey: string, templateHash: string, token: string): void;
-  // claim된 지 olderThanMs 이상이고 아직 commit 안 된 claim만 강제로 회수한다(token 불필요 — 사람이
-  // 직접 검토 후 호출). 조건에 안 맞으면 아무 것도 안 하고 false.
+  // Forcibly reclaims only a claim that has been claimed for at least olderThanMs and has not
+  // yet been committed (no token needed — a human calls this after reviewing it directly). If
+  // the condition isn't met, it does nothing and returns false.
   forceReleaseStaleClaim(
     sheetId: string,
     tab: string,
@@ -211,143 +233,171 @@ export interface SendLog {
     templateHash: string,
     olderThanMs: number,
   ): boolean;
-  // 읽기 전용 조회(dry-run 미리보기 전용 — 상태를 바꾸지 않는다. 발송 흐름의 중복 방지는 claim()을 쓴다).
+  // Read-only lookup (for dry-run preview only — it does not change state. Use claim() for
+  // duplicate prevention in the send flow).
   wasSent(sheetId: string, tab: string, rowKey: string, templateHash: string): boolean;
   list(sheetId: string, options?: SendLogListOptions): SendLogListResult;
 }
 
 export interface Clock {
   now(): Date;
-} // 테스트 결정론용
+} // for test determinism
 ```
 
 ```ts
-// core/template.ts — 순수 함수
+// core/template.ts — pure function
 export interface RenderResult { text: string; missing: string[] }
 renderTemplate(template: string, values: Record<string, string>): RenderResult
-// {{key}} 치환. 값 결측 시 RenderResult.missing에 키를 담아 반환 (throw 아님 — 행 단위 실패 처리)
+// Substitutes {{key}}. When a value is missing, the key is returned in RenderResult.missing
+// (not thrown — handled as a per-row failure)
 ```
 
-## 4. 발송 파이프라인 (core/pipeline.ts)
+## 4. Send Pipeline (core/pipeline.ts)
 
-`run(sheetId, opts: { dryRun: boolean })` 순서:
+`run(sheetId, opts: { dryRun: boolean })` order:
 
-1. `readConfig` → zod 파싱 (실패 시 어떤 키가 왜 틀렸는지 명시한 에러)
-2. `readRows` → `filter_column/value` 적용 → 매칭된 행이 `MAX_PIPELINE_ROWS`(1000)를 넘으면:
-   - **dry-run**: 앞 1000행만 잘라서 미리보기하고 `totalMatched`/`truncated`로 실제로는 더 많다는
-     사실을 알린다(`read_rows`와 같은 정책).
-   - **live**: 일부만 조용히 보내는 부분 발송 사고를 피하기 위해 **발송을 아예 시작하지 않고**
-     명확한 에러로 중단한다(필터를 좁히거나 배치를 나누라는 안내 포함). provider.send()/claim() 등
-     어떤 부수효과도 발생하지 않는다(`docs/ADVERSARIAL_REVIEW_004.md` AR-022 — 대형/실수로 넓어진
-     시트 전체가 필터 없이 매칭되면 메모리 급증뿐 아니라 대량 오발송으로도 이어질 수 있었다).
-3. 행별 렌더링: 수신자 결측·이메일 형식 불량·템플릿 변수 결측 행은 `failed` 후보로 표시하고 계속 진행
-   - `templateHash` = subject를 sha256, body를 sha256한 뒤 그 두 다이제스트를 이어붙여 다시 sha256한
-     값의 앞 12자. subject/body 사이에 구분자 문자를 끼워 넣는 방식(과거 구현)은 그 구분자와 같은
-     문자가 경계에 있으면 서로 다른 (subject,body) 조합이 같은 해시로 충돌할 수 있었다
-     (`REG-001`, docs/ADVERSARIAL_REVIEW_003_RESOLUTION_GAPS.md — 실측으로 재현·확인됨). sha256
-     다이제스트는 항상 고정 64자라 이어붙이는 경계가 내용에 따라 흔들리지 않아 이 문제가 없다.
-     템플릿이 바뀌면 해시도 바뀌어 재발송이 허용된다(의도된 동작)
-4. **dryRun이면**: `sendLog.wasSent(rowKey, templateHash)`(읽기 전용)로만 중복 표시하고 결과 반환.
-   provider/sendLog/시트 쓰기는 전부 없음.
-5. **dryRun이 아니면**: 행마다 다음을 **하나씩 끝까지 완결한 뒤 다음 행으로 넘어간다** (같은 배치에
-   같은 rowKey가 두 번 있어도 두 번째 claim이 즉시 실패해 중복 발송을 막는다 — AR-011):
-   1. `sendLog.claim(rowKey, templateHash)` → `claimed=false`면 `skipped_duplicate`(provider 호출 안 함)
-   2. `claimed=true`면 `provider.send()` — **개별 try/catch**, 한 행 실패가 배치를 중단하지 않는다
-   3. 성공하면 `sendLog.commit(token, ...)` → `sent`. commit 자체가 실패하면(발송은 됐지만 로컬
-      기록 실패) `release()`하지 않고 `sent_log_failed`로 표시(재발송 사고 방지, AR-013)
-   4. 실패(provider 실패/예외)면 `sendLog.release(token, ...)` → `failed` (다음 실행에서 재시도 가능).
-      **release() 자체가 실패해도 절대 밖으로 던지지 않는다** — 실패 사실을 error 메시지와
-      stderr에만 남기고, 나머지 행 처리는 계속한다(`GAP-003` — 예전에는 release 실패가 배치
-      전체를 중단시켰다). 이 행의 claim은 재시도가 자동으로는 안 풀릴 수 있어 사람의
-      `forceReleaseStaleClaim()` 확인이 필요할 수 있다.
-6. `ensureStatusColumns` + `writeStatus` 일괄 write-back (§2 결측 정책, AR-014)
-7. 집계 반환: `{ sent, failed, skipped, logFailed, totalMatched, truncated, details[] }`.
-   `sent_log_failed`는 `sent`/`failed` 어느 쪽 카운트에도 들어가지 않고 `logFailed`로 별도
-   집계된다 — `sent+failed+skipped+logFailed`는 항상 `details.length`와 같다(집계 불변식,
-   `GAP-002`). `totalMatched`/`truncated`는 위 2단계의 `MAX_PIPELINE_ROWS` 절단 여부를 나타낸다
-   (`AR-022`).
+1. `readConfig` → zod parsing (on failure, an error stating which key is wrong and why)
+2. `readRows` → apply `filter_column`/`filter_value` → if the matched rows exceed
+   `MAX_PIPELINE_ROWS` (1000):
+   - **dry-run**: truncate to the first 1000 rows for the preview and report via
+     `totalMatched`/`truncated` that there are actually more (same policy as `read_rows`).
+   - **live**: to avoid a partial-send accident where only some rows are sent silently, **it does
+     not start sending at all** and aborts with a clear error (including guidance to narrow the
+     filter or split into batches). No side effect whatsoever — provider.send()/claim(), etc. —
+     occurs (`docs/ADVERSARIAL_REVIEW_004.md` AR-022 — if an entire large/accidentally-widened
+     sheet matched with no filter, it could lead not only to a memory spike but also to a
+     mass-misfire of sends).
+3. Per-row rendering: rows with a missing recipient, malformed email, or missing template variable
+   are marked as `failed` candidates and processing continues
+   - `templateHash` = sha256 the subject, sha256 the body, concatenate the two digests, then
+     sha256 that again and take the first 12 characters. The previous implementation, which
+     inserted a separator character between subject and body, could let two different
+     (subject, body) combinations collide on the same hash if a character matching the separator
+     sat at the boundary (`REG-001`, docs/ADVERSARIAL_REVIEW_003_RESOLUTION_GAPS.md — reproduced
+     and confirmed empirically). An sha256 digest is always a fixed 64 characters, so the
+     concatenation boundary never shifts based on content, and this problem does not occur.
+     Changing the template also changes the hash, which permits a resend (intended behavior)
+4. **If dryRun**: mark duplicates using only `sendLog.wasSent(rowKey, templateHash)` (read-only)
+   and return the result. No provider/sendLog/sheet writes at all.
+5. **If not dryRun**: for each row, **fully complete the following one step at a time before
+   moving to the next row** (even if the same rowKey appears twice in the same batch, the second
+   claim fails immediately, preventing a duplicate send — AR-011):
+   1. `sendLog.claim(rowKey, templateHash)` → if `claimed=false`, `skipped_duplicate` (provider is
+      not called)
+   2. if `claimed=true`, `provider.send()` — **individual try/catch**; a single row's failure does
+      not abort the batch
+   3. on success, `sendLog.commit(token, ...)` → `sent`. If commit itself fails (the send
+      succeeded but the local record failed), it is marked `sent_log_failed` without calling
+      `release()` (prevents a duplicate-send accident, AR-013)
+   4. on failure (provider failure/exception), `sendLog.release(token, ...)` → `failed` (retryable
+      on the next run). **Even if release() itself fails, it is never thrown outward** — the
+      failure is recorded only in the error message and stderr, and processing of the remaining
+      rows continues (`GAP-003` — previously, a release failure would abort the entire batch).
+      This row's claim may not be automatically released for retry, so a human's
+      `forceReleaseStaleClaim()` check may be needed.
+6. `ensureStatusColumns` + `writeStatus` batch write-back (§2 missing-value policy, AR-014)
+7. Return aggregates: `{ sent, failed, skipped, logFailed, totalMatched, truncated, details[] }`.
+   `sent_log_failed` is not counted under either `sent` or `failed`, and is tallied separately as
+   `logFailed` — `sent+failed+skipped+logFailed` always equals `details.length` (aggregation
+   invariant, `GAP-002`). `totalMatched`/`truncated` indicate whether the `MAX_PIPELINE_ROWS`
+   truncation from step 2 above occurred (`AR-022`).
 
-## 5. MCP 도구 (src/server.ts)
+## 5. MCP Tools (src/server.ts)
 
-`@modelcontextprotocol/sdk`, stdio transport. 입력 스키마는 zod.
+`@modelcontextprotocol/sdk`, stdio transport. Input schemas use zod.
 
-| 도구                 | 입력                                           | 동작                                                                                                                                                                        |
-| -------------------- | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `read_rows`          | `sheetId`                                      | config 적용된 대상 행 반환 (필터 반영, 최대 200행 미리보기)                                                                                                                 |
-| `preview_messages`   | `sheetId`                                      | dryRun 파이프라인 실행 — 렌더된 메시지 목록과 결측/중복 경고 반환. **발송 없음**                                                                                            |
-| `send_notifications` | `sheetId`, `confirm: boolean`                  | `confirm=true` **그리고** `SEND_MODE=live`일 때만 실발송. 아니면 dry-run 결과 + 안내 반환                                                                                   |
-| `get_send_log`       | `sheetId`, `limit?: number`, `cursor?: string` | 발송 이력을 최신순으로 반환 (기본 200건, 최대 1000건). `hasMore=true`면 응답의 `nextCursor`를 다음 호출의 `cursor`로 넘겨 이어서 조회한다(정확한 hasMore — AR-015, GAP-006) |
+| Tool                 | Input                                          | Behavior                                                                                                                                                                                                                       |
+| -------------------- | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `read_rows`          | `sheetId`                                      | Returns target rows with config applied (filter applied, preview up to 200 rows)                                                                                                                                               |
+| `preview_messages`   | `sheetId`                                      | Runs the dryRun pipeline — returns the list of rendered messages and missing/duplicate warnings. **No sending**                                                                                                                |
+| `send_notifications` | `sheetId`, `confirm: boolean`                  | Sends for real only when `confirm=true` **and** `SEND_MODE=live`. Otherwise returns the dry-run result + guidance                                                                                                              |
+| `get_send_log`       | `sheetId`, `limit?: number`, `cursor?: string` | Returns send history in most-recent-first order (default 200 entries, max 1000). If `hasMore=true`, pass the response's `nextCursor` as the `cursor` for the next call to continue the query (exact hasMore — AR-015, GAP-006) |
 
-안전장치가 이중인 이유: 에이전트가 자율 실행 중 실수로 실발송하는 사고를 막기 위해, 도구 파라미터(대화 레벨)와 환경변수(프로세스 레벨) 둘 다 요구한다.
+Why the safeguard is dual: to prevent an accident where an agent mistakenly sends for real during
+autonomous execution, both a tool parameter (conversation level) and an environment variable
+(process level) are required.
 
-## 6. 어댑터 메모
+## 6. Adapter Notes
 
-- **GoogleSheetClient**: `googleapis` + 서비스 계정. 시트를 서비스 계정 이메일에 공유하는 방식(v0.1). 읽기는 `values.get`, 상태 기록은 `values.batchUpdate`.
-- **ResendEmailProvider**: REST 1콜. `RESEND_API_KEY`, `MAIL_FROM` 환경변수. 응답의 id를 `messageId`로 저장.
-- **SmtpProvider(Nodemailer)**: Resend 미사용 환경 대비 대체 어댑터. v0.1에서 구현은 선택.
-- **SemaphoreSmsProvider**: v0.1에서는 생성자에서 "Sender ID 등록 후 v0.2에서 활성화" 에러를 던지는 스텁만.
-- **SqliteSendLog**: `better-sqlite3`, 파일 경로 `SEND_LOG_PATH`(기본 `./data/sendlog.db`). unique 키
-  `(sheet_id, tab, row_key, template_hash)` — 이 unique 제약이 곧 claim()의 원자성 경계다(§3).
-  `claim_token`(소유권 토큰)과 `committed`(0/1, claimed/sent 구분) 컬럼을 둔다. `close()`는 멱등이라
-  (better-sqlite3 자체 보장, 수동 검증됨) 여러 종료 경로(정상/SIGINT/SIGTERM/`exit`)에서 겹쳐
-  불려도 안전하다(AR-018/GAP-008).
-  - **기존 DB 업그레이드(STATUS-GAP-001)**: T6 시절의 `record()` 전용 v1 스키마(`send_status`/
-    `error` 컬럼, `claim_token`/`committed` 없음)로 만들어진 `sendlog.db`를 그대로 열어도 생성자가
-    자동으로 v2(claim/commit) 스키마로 마이그레이션한다. 과거 `send_status='sent'`였던 행만
-    `committed=1`인 확정 기록으로 옮기고(그래야 과거 발송분이 마이그레이션 후에도 중복 발송을
-    계속 막는다), `failed`/`skipped_duplicate` 행은 옮기지 않는다(v1은 UNIQUE 제약 때문에 한 번
-    실패하면 영구히 재시도가 막히는 버그가 있었고, 그 버그를 새 스키마로 옮기면 안 되기 때문).
-    원본 v1 테이블은 지우지 않고 `send_log_v1_backup_<timestamp>_<random>`으로 이름만 바꿔 그대로
-    남긴다. 전체가 하나의 트랜잭션이라 중간에 실패하면(예: 이전에 중단된 마이그레이션이 남긴
-    `send_log_new` 임시 테이블과 충돌) 원본 `send_log`가 그대로 롤백돼 보존되고, 생성자가
-    에이전트 친화적 에러로 원인과 조치를 안내하며 실패한다(fail-fast). 데이터 손실 없이 자동
-    전환되므로 "DB 파일을 지우고 다시 만들라"는 예전 안내는 더 이상 필요/권장하지 않는다.
-  - **stale claim 복구(STATUS-GAP-002/003)**: `forceReleaseStaleClaim(olderThanMs)`는 이제
-    `olderThanMs`가 0 이상의 정수가 아니면(음수/NaN/Infinity/소수) 어떤 claim도 건드리기 전에
-    즉시 에러를 던진다 — 음수를 잘못 넘기면 cutoff가 미래가 되어 방금 만든 최신 claim까지
-    "오래됨"으로 오판해 삭제해버리는 사고를 막는다(InMemorySendLog와 공통 검증 함수
-    `assertValidStaleClaimThreshold()`를 공유). 이 내부 API를 사람이 직접 안전하게 쓸 수 있도록
-    `src/cli/recoverStaleClaim.ts` 운영 CLI를 제공한다 — 레포를 clone해 개발 중이면
-    `npm run recover:stale-claim --`, `npx sheet-mcp`로 설치했다면 `npx sheet-mcp-recover`로 실행한다
-    (두 번째 공개 `bin`, `docs/ADVERSARIAL_REVIEW_004.md` AR-019 — 예전엔 `scripts/`에 있어서
-    npm 패키지에 아예 포함되지 않았고, README가 공식 절차로 안내하는데도 `npx`로 설치한 사람은
-    실행할 방법이 없었다). 기본은 `--confirm` 없이 DB를 **readonly로 열어** 조회만 하고, 5분
-    미만의 `--older-than-ms`는 `--i-understand-the-risk` 없이 거부하며, 모든 조회·회수 실행을
-    `data/recovery-audit.log`(JSON Lines, `RECOVERY_AUDIT_LOG_PATH`로 재지정 가능)에 남긴다. MCP
-    도구로는 여전히 노출하지 않는다(§3 SendLog 인터페이스 주석 참고 — 자율 에이전트가 "발송됐을
-    수도 있는" claim을 스스로 회수 가능하게 만들면 안 된다는 원칙은 그대로다).
+- **GoogleSheetClient**: `googleapis` + service account. The sheet is shared with the service
+  account's email (v0.1). Reads use `values.get`; status writes use `values.batchUpdate`.
+- **ResendEmailProvider**: a single REST call. `RESEND_API_KEY`, `MAIL_FROM` environment
+  variables. The response's id is stored as `messageId`.
+- **SmtpProvider (Nodemailer)**: an alternative adapter for environments not using Resend.
+  Implementation in v0.1 is optional.
+- **SemaphoreSmsProvider**: in v0.1, only a stub whose constructor throws a "register a Sender ID,
+  then it will be enabled in v0.2" error.
+- **SqliteSendLog**: `better-sqlite3`, file path `SEND_LOG_PATH` (default `./data/sendlog.db`).
+  The unique key is `(sheet_id, tab, row_key, template_hash)` — this unique constraint is
+  precisely claim()'s atomicity boundary (§3). It has `claim_token` (ownership token) and
+  `committed` (0/1, distinguishing claimed/sent) columns. `close()` is idempotent (guaranteed by
+  better-sqlite3 itself, manually verified), so it is safe to call it from multiple, overlapping
+  exit paths (normal/SIGINT/SIGTERM/`exit`) (AR-018/GAP-008).
+  - **Upgrading an existing DB (STATUS-GAP-001)**: even if you open a `sendlog.db` as-is that was
+    created with the T6-era, `record()`-only v1 schema (`send_status`/`error` columns, no
+    `claim_token`/`committed`), the constructor automatically migrates it to the v2 (claim/commit)
+    schema. Only rows whose past `send_status` was `'sent'` are moved over as finalized records
+    with `committed=1` (so that past sends continue to block duplicate sends after migration);
+    `failed`/`skipped_duplicate` rows are not moved (v1 had a bug where the UNIQUE constraint
+    permanently blocked retries after a single failure, and that bug must not be carried into the
+    new schema). The original v1 table is not deleted — it is left in place, only renamed to
+    `send_log_v1_backup_<timestamp>_<random>`. Since the whole thing is one transaction, if it
+    fails partway through (e.g. a conflict with a `send_log_new` temp table left behind by a
+    previously interrupted migration), the original `send_log` is rolled back and preserved as-is,
+    and the constructor fails with an agent-friendly error explaining the cause and the remedy
+    (fail-fast). Since the conversion happens automatically with no data loss, the old guidance to
+    "delete the DB file and recreate it" is no longer necessary or recommended.
+  - **Stale claim recovery (STATUS-GAP-002/003)**: `forceReleaseStaleClaim(olderThanMs)` now
+    throws immediately, before touching any claim, if `olderThanMs` is not a non-negative integer
+    (negative/NaN/Infinity/fractional) — this prevents an accident where passing a negative value
+    by mistake pushes the cutoff into the future and misjudges even a claim just created as
+    "stale," deleting it (shared with InMemorySendLog via the common validation function
+    `assertValidStaleClaimThreshold()`). To let a human use this internal API safely by hand, an
+    operational CLI, `src/cli/recoverStaleClaim.ts`, is provided — run it as
+    `npm run recover:stale-claim --` if developing from a cloned repo, or as
+    `npx sheet-mcp-recover` if installed via `npx sheet-mcp` (the second published `bin`,
+    `docs/ADVERSARIAL_REVIEW_004.md` AR-019 — previously it lived under `scripts/`, so it wasn't
+    included in the npm package at all, and even though the README pointed to it as the official
+    procedure, someone who installed via `npx` had no way to run it). By default, without
+    `--confirm`, it opens the DB **read-only** and only queries; an `--older-than-ms` under 5
+    minutes is rejected without `--i-understand-the-risk`; and every query/recovery run is logged
+    to `data/recovery-audit.log` (JSON Lines, relocatable via `RECOVERY_AUDIT_LOG_PATH`). It is
+    still not exposed as an MCP tool (see the SendLog interface comment in §3 — the principle
+    that an autonomous agent must not be able to reclaim a claim that "may have been sent" on its
+    own still stands).
 
-`npm run dev`/`npm run smoke`는 시작 시 `dotenv`로 `.env`를 로드한다(이미 설정된 실제 프로세스
-환경변수는 덮어쓰지 않음). `createServer()`를 단독 import하는 테스트 경로에서는 절대 로드하지
-않는다 — 테스트 결정론에 영향을 주지 않기 위함(AR-012).
+`npm run dev`/`npm run smoke` load `.env` via `dotenv` at startup (it does not overwrite process
+environment variables that are already set). Test paths that import only `createServer()` never
+load it — so as not to affect test determinism (AR-012).
 
-## 7. 환경변수 (.env.example로 커밋)
+## 7. Environment Variables (committed as .env.example)
 
 ```
 SEND_MODE=dry_run              # dry_run | live
-GOOGLE_SERVICE_ACCOUNT_JSON=   # 서비스 계정 키 JSON 경로
+GOOGLE_SERVICE_ACCOUNT_JSON=   # path to the service account key JSON
 RESEND_API_KEY=
 MAIL_FROM=notify@example.com
 SEND_LOG_PATH=./data/sendlog.db
-SMOKE_SHEET_ID=                # npm run smoke 대상 구글시트 ID (사람 전용 수동 스모크)
-SMOKE_SHOW_VALUES=             # 1이면 smoke가 첫 행 실제 값을 출력 (기본은 컬럼명만, 민감정보 로그 방지)
-SMOKE_CONFIRM_SEND=            # 1이면 smoke가 실발송에 동의(SEND_MODE=live와 함께 있어야 실제로 발송됨)
+SMOKE_SHEET_ID=                # target Google Sheet ID for npm run smoke (human-only manual smoke test)
+SMOKE_SHOW_VALUES=             # if 1, smoke prints the actual values of the first row (default is column names only, to prevent logging sensitive info)
+SMOKE_CONFIRM_SEND=            # if 1, smoke consents to a real send (must be combined with SEND_MODE=live to actually send)
 ```
 
-## 8. Claude Code 연결
+## 8. Connecting Claude Code
 
-두 가지 설치 경로가 있다 — 이 레포를 직접 개발/기여하는 사람은 A, 이미 만들어진 서버를 그냥
-쓰기만 하려는 사람(팀 동료, SME 사용자)은 B를 쓴다.
+There are two installation paths — someone directly developing/contributing to this repo uses A,
+and someone who just wants to use the already-built server (a teammate, an SME user) uses B.
 
-### A. 레포 clone (개발/기여용)
+### A. Cloning the repo (for development/contribution)
 
-프로젝트 스코프로 등록해 `.mcp.json`을 레포에 커밋한다(팀/미래의 나와 공유).
+Register it at project scope so `.mcp.json` is committed to the repo (shared with the
+team/your future self).
 
 ```bash
 claude mcp add sheet-mcp --scope project -- npx tsx src/server.ts
 ```
 
-생성되는 `.mcp.json` 형태:
+The resulting `.mcp.json` looks like:
 
 ```json
 {
@@ -357,46 +407,51 @@ claude mcp add sheet-mcp --scope project -- npx tsx src/server.ts
 }
 ```
 
-### B. npm 패키지 (`npx sheet-mcp`) — clone 없이 쓰기
+### B. npm package (`npx sheet-mcp`) — using it without cloning
 
-**권장 방법: `claude mcp add`의 `-e`로 환경변수를 직접 넘긴다.** `.env` 파일을 따로 준비하지
-않는다.
+**Recommended approach: pass environment variables directly via `claude mcp add`'s `-e`.** Don't
+prepare a separate `.env` file.
 
 ```bash
 claude mcp add sheet-mcp --scope local \
-  -e GOOGLE_SERVICE_ACCOUNT_JSON=/절대/경로/service-account.json \
+  -e GOOGLE_SERVICE_ACCOUNT_JSON=/absolute/path/service-account.json \
   -e RESEND_API_KEY=re_xxxxx \
-  -e MAIL_FROM=notify@updates.본인도메인.com \
+  -e MAIL_FROM=notify@updates.yourdomain.com \
   -- npx -y sheet-mcp
 ```
 
-- **왜 `.env` 파일이 아니라 `-e`인가**: `npx -y sheet-mcp`는 Claude Code(부모 프로세스)가 어떤
-  디렉터리에서 실행 중이든 그 cwd를 그대로 물려받는다 — 레포를 clone해서 쓰는 A 경로와 달리
-  "이 디렉터리에 `.env`를 두면 된다"고 안내할 수 있는 고정된 위치가 없다. `-e`로 넘긴 값은
-  자식 프로세스의 `process.env`에 이미 들어간 채로 시작하고, `src/server.ts`의
-  `dotenv.config()`는 **이미 설정된 환경변수를 덮어쓰지 않으므로**(dotenv 기본 동작) `.env` 파일
-  유무와 무관하게 그대로 쓰인다.
-- **`GOOGLE_SERVICE_ACCOUNT_JSON`은 반드시 절대 경로로 넘긴다.** 이 값은 서비스 계정 키 JSON
-  **파일 경로**(내용이 아니다)이고, 상대 경로면 위와 같은 이유로 실제로 어느 디렉터리 기준인지
-  예측할 수 없다.
-- **`SEND_LOG_PATH`도 기본값이 상대 경로(`./data/sendlog.db`)다.** 지정하지 않으면 마찬가지로
-  예측 불가능한 위치에 DB 파일이 생긴다 — `-e SEND_LOG_PATH=/절대/경로/sendlog.db`로 명시하는
-  것을 권장한다.
-- **`--scope local`을 쓴다** (기본값). `--scope project`로 등록하면 `-e`로 넘긴 값이 레포에
-  커밋되는 `.mcp.json`에 그대로 저장돼 시크릿이 노출된다 — `local`/`user` 스코프는 그 사람의
-  로컬 설정에만 저장되고 git에 커밋되지 않는다.
-- 레포를 clone한 상태에서 A처럼 실행 디렉터리가 고정돼 있다면 기존의 `.env` 파일 방식도 여전히
-  동작한다(§7) — 다만 B 경로(npx)에서는 위 `-e` 방식을 우선 권장한다.
+- **Why `-e` instead of a `.env` file**: `npx -y sheet-mcp` inherits the cwd of Claude Code (the
+  parent process) as-is, whatever directory it happens to be running from — unlike path A, which
+  uses a cloned repo, there is no fixed location where you can say "just put a `.env` here."
+  Values passed via `-e` are already present in the child process's `process.env` when it starts,
+  and `src/server.ts`'s `dotenv.config()` **does not overwrite environment variables that are
+  already set** (dotenv's default behavior), so they are used as-is regardless of whether a
+  `.env` file exists.
+- **Always pass `GOOGLE_SERVICE_ACCOUNT_JSON` as an absolute path.** This value is the **file
+  path** to the service account key JSON (not its contents), and for the same reason as above, a
+  relative path makes it unpredictable which directory it would actually be resolved against.
+- **`SEND_LOG_PATH`'s default is also a relative path (`./data/sendlog.db`).** If not specified,
+  the DB file is likewise created in an unpredictable location — specifying it explicitly with
+  `-e SEND_LOG_PATH=/absolute/path/sendlog.db` is recommended.
+- **Use `--scope local`** (the default). Registering with `--scope project` stores the values
+  passed via `-e` as-is in the `.mcp.json` that gets committed to the repo, exposing secrets —
+  `local`/`user` scope is stored only in that person's local settings and is not committed to
+  git.
+- If the repo is cloned and the run directory is fixed as in A, the existing `.env` file approach
+  still works too (§7) — however, for path B (npx), the `-e` approach above is the primary
+  recommendation.
 
-> **아직 `npm publish`를 하지 않았다** (`docs/TASKS.md` T11~T13, `npm publish` 자체는 별도 승인
-> 필요 — 공개 레지스트리 노출은 되돌리기 어려운 동작이라 준비만 해 두고 실행은 보류한 상태).
-> 그 전까지 `npx sheet-mcp`/`npx -y sheet-mcp`는 레지스트리에 이 이름의 패키지가 없어 동작하지
-> **않는다**. 지금은 위 A(레포 clone) 방법만 실제로 쓸 수 있다. publish 이후에는 이 문단을 지운다.
+> **`npm publish` has not been run yet** (`docs/TASKS.md` T11~T13; `npm publish` itself requires
+> separate approval — exposure to the public registry is hard to reverse, so it has been prepared
+> but execution is held off). Until then, `npx sheet-mcp`/`npx -y sheet-mcp` **will not** work,
+> since no package with this name exists in the registry. Right now, only method A (cloning the
+> repo) above can actually be used. Delete this paragraph after publishing.
 
-연결 확인은 Claude Code 안에서 `/mcp`. 시크릿은 커밋되는 `.mcp.json`(project scope)에 평문으로
-넣지 않는다 — A는 셸 환경/.env로, B는 위처럼 `-e` + `local`/`user` 스코프로 공급한다.
+Verify the connection with `/mcp` inside Claude Code. Do not put secrets in plaintext into the
+committed `.mcp.json` (project scope) — A supplies them via the shell environment/.env, B via
+`-e` + `local`/`user` scope as above.
 
-## 9. 디렉터리 구조 (목표)
+## 9. Directory Structure (target)
 
 ```
 sheet_mcp/

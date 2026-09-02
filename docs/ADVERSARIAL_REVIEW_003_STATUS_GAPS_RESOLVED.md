@@ -1,230 +1,266 @@
-# 적대적 검수 리포트 003 STATUS_GAPS — 조치 결과
+# Adversarial Review Report 003 STATUS_GAPS — Action Results
 
-- 작성일: 2026-09-01
-- 대상 문서: `docs/ADVERSARIAL_REVIEW_003_STATUS_GAPS.md` (STATUS-GAP-001~005, OBS-001~002)
-- 관련 문서 체인:
+- Written on: 2026-09-01
+- Target document: `docs/ADVERSARIAL_REVIEW_003_STATUS_GAPS.md` (STATUS-GAP-001~005, OBS-001~002)
+- Related document chain:
   - `docs/ADVERSARIAL_REVIEW_003.md` (AR-011~018)
   - `docs/ADVERSARIAL_REVIEW_003_RESOLUTION.md`
   - `docs/ADVERSARIAL_REVIEW_003_RESOLUTION_GAPS.md` (GAP-001~008, REG-001)
   - `docs/ADVERSARIAL_REVIEW_003_RESOLUTION_GAPS_RESOLVED.md`
   - `docs/ADVERSARIAL_REVIEW_003_STATUS.md`
-  - `docs/ADVERSARIAL_REVIEW_003_STATUS_GAPS.md` ← 이번 조치 대상
-- 변경 원칙: 기존 감사 문서(위 목록)는 수정하지 않는다. 이 문서가 그 결과를 기록한다.
+  - `docs/ADVERSARIAL_REVIEW_003_STATUS_GAPS.md` ← target of this round of action
+- Change principle: the existing audit documents (the list above) are not modified. This document
+  records the results.
 
-## 1. 결론
+## 1. Conclusion
 
-`ADVERSARIAL_REVIEW_003_STATUS_GAPS.md`가 지적한 5개 주요 미해소 항목(STATUS-GAP-001~005)과
-관찰 사항(OBS-001~002) 중, **코드·CLI·문서로 해소 가능한 항목은 전부 조치했다.** 사람의 실제
-자격증명(Google Sheets/Resend)이 있어야만 수행 가능한 STATUS-GAP-005(실제 수동 스모크)만은
-이번에도 코드로 대신할 수 없어 여전히 미완료다 — 이 문서는 그 사실을 숨기지 않고 그대로 남긴다.
+Of the 5 major unresolved items (STATUS-GAP-001~005) and the observations (OBS-001~002) pointed
+out by `ADVERSARIAL_REVIEW_003_STATUS_GAPS.md`, **every item resolvable through code, a CLI, or
+documentation has now been addressed.** Only STATUS-GAP-005 (the actual manual smoke test), which
+can be performed only with actual human credentials (Google Sheets/Resend), remains incomplete this
+time as well, since it still cannot be substituted with code — this document does not hide that
+fact and leaves it recorded as-is.
 
-| 구분                                            | 판정                                             |
-| ------------------------------------------------ | ------------------------------------------------- |
-| STATUS-GAP-001 — 기존 v1 DB 스키마 자동 마이그레이션 | **해소** — 무손실 자동 변환 + 원본 백업 + 롤백 안전성 테스트 |
-| STATUS-GAP-002 — olderThanMs 입력 검증           | **해소** — 공통 검증 함수, 두 어댑터 모두 적용     |
-| STATUS-GAP-003 — 사람 전용 stale claim 복구 CLI  | **해소** — `npm run recover:stale-claim` 신규     |
-| STATUS-GAP-004 — 상태 컬럼 의미 정책 결정        | **해소** — 옵션 C(현재 정책 유지 + 계약 명확화) 채택·문서화 |
-| STATUS-GAP-005 — 실제 Google Sheet+Resend 스모크 | **미해소** — 실제 자격증명이 필요해 이번에도 수행 불가 |
-| OBS-001 — claim 만료 임계값 운영 확정            | **미해소(그대로 둠)** — 실제 운영 데이터가 있어야 정할 수 있는 값 |
-| OBS-002 — 기존 DB 삭제/업그레이드 안내 문서화    | **해소** — README §운영, DESIGN §6에 추가          |
+| Category | Verdict |
+| --- | --- |
+| STATUS-GAP-001 — automatic migration of the existing v1 DB schema | **Resolved** — lossless automatic conversion + original backup + rollback safety test |
+| STATUS-GAP-002 — olderThanMs input validation | **Resolved** — a common validation function, applied to both adapters |
+| STATUS-GAP-003 — human-only stale claim recovery CLI | **Resolved** — new `npm run recover:stale-claim` |
+| STATUS-GAP-004 — status column meaning policy decision | **Resolved** — Option C (keep current policy + clarify the contract) adopted and documented |
+| STATUS-GAP-005 — actual Google Sheet+Resend smoke test | **Unresolved** — still not performable this time, as actual credentials are required |
+| OBS-001 — finalizing the claim expiry threshold operationally | **Unresolved (left as-is)** — a value that can only be set once real operational data exists |
+| OBS-002 — documenting existing DB deletion/upgrade guidance | **Resolved** — added to README §Operations, DESIGN §6 |
 
-## 2. STATUS-GAP-001 — 기존 SendLog DB 스키마 자동 마이그레이션
+## 2. STATUS-GAP-001 — Automatic migration of the existing SendLog DB schema
 
-### 조치
+### Action
 
-`src/adapters/sqliteSendLog.ts` 생성자가 `PRAGMA table_info(send_log)`로 기존 테이블의 스키마
-버전을 판별한다(`detectSchemaVersion()`, export됨).
+The `src/adapters/sqliteSendLog.ts` constructor determines the schema version of an existing table
+via `PRAGMA table_info(send_log)` (`detectSchemaVersion()`, exported).
 
-- `none`(테이블 없음): 새 v2 스키마로 바로 생성.
-- `v2_claim`(`claim_token`/`committed` 컬럼 있음): 이미 최신 스키마 — 아무 것도 하지 않음.
-- `v1_record`(`send_status` 컬럼만 있음, T6 시절 record() 스키마): `migrateV1ToV2()`가 자동 변환.
-- 그 외(알 수 없는 컬럼 구성): 마이그레이션을 시도하지 않고 원인·조치를 안내하는 에러로 즉시 실패.
+- `none` (no table): create the new v2 schema directly.
+- `v2_claim` (has `claim_token`/`committed` columns): already the latest schema — do nothing.
+- `v1_record` (has only the `send_status` column, the T6-era record() schema):
+  `migrateV1ToV2()` converts it automatically.
+- Anything else (an unrecognized column configuration): no migration is attempted; it immediately
+  fails with an error explaining the cause and the remedy.
 
-`migrateV1ToV2()`는 단일 트랜잭션(`db.transaction()`)으로 다음을 수행한다.
+`migrateV1ToV2()` performs the following in a single transaction (`db.transaction()`):
 
-1. 이전에 중단된 마이그레이션이 남긴 `send_log_new` 임시 테이블이 있으면 즉시 에러(충돌 방지).
-2. v2 스키마로 `send_log_new`를 만든다.
-3. 이전 `send_status='sent'`였던 행만 `committed=1`(확정)로 옮긴다. `claim_token`은 마이그레이션
-   전용 신규 UUID를 발급한다(과거 실행이 그 토큰으로 commit/release를 부를 일이 없으므로 소유권
-   충돌이 생기지 않는다). `failed`/`skipped_duplicate`였던 행은 **의도적으로 옮기지 않는다** —
-   v1은 UNIQUE 제약 때문에 한 번 실패로 기록되면 같은 키를 영구히 재시도할 수 없었던 버그가
-   있었고(바로 이 버그가 AR-011/GAP-001이 claim/commit 재설계로 고치려던 문제), 그 버그를 새
-   스키마로 그대로 옮기면 안 되기 때문이다.
-4. 원본 `send_log`는 지우지 않고 `send_log_v1_backup_<timestamp>_<random>`으로 이름만 바꾼다.
-5. `send_log_new`를 `send_log`로 바꾼다.
+1. If a `send_log_new` temp table left over from a previously interrupted migration exists, it
+   errors immediately (to prevent a collision).
+2. Creates `send_log_new` with the v2 schema.
+3. Moves only rows that previously had `send_status='sent'` over, as `committed=1` (confirmed).
+   `claim_token` is issued as a fresh, migration-only UUID (since a past run will never call
+   commit/release with that token, no ownership conflict arises). Rows that were `failed`/
+   `skipped_duplicate` are **deliberately not carried over** — v1 had a bug where, because of a
+   UNIQUE constraint, once a key was recorded as a failure, the same key could never be retried
+   permanently (this exact bug is what AR-011/GAP-001 fixed via the claim/commit redesign), and
+   that bug must not be carried into the new schema.
+4. The original `send_log` is not deleted, only renamed to
+   `send_log_v1_backup_<timestamp>_<random>`.
+5. `send_log_new` is renamed to `send_log`.
 
-트랜잭션이라 1번(충돌) 또는 그 사이 어떤 SQL 오류가 나도 better-sqlite3가 전부 롤백해 원본
-`send_log`가 손상 없이 그대로 남는다 — 생성자는 이를 감싸 "원본은 보존됐다"는 문구가 포함된
-에이전트 친화적 에러로 다시 던진다.
+Because it is a transaction, if step 1 (a collision) or any other SQL error occurs along the way,
+better-sqlite3 rolls everything back, leaving the original `send_log` intact and undamaged — the
+constructor wraps this and re-throws it as an agent-friendly error that includes the phrase "the
+original was preserved."
 
-### 검증
+### Verification
 
-`tests/sqliteSendLog.test.ts`의 `v1(T6 record) → v2(claim/commit) 자동 마이그레이션` describe
-블록(6개 테스트)이 실제로:
+The `v1(T6 record) → v2(claim/commit) automatic migration` describe block (6 tests) in
+`tests/sqliteSendLog.test.ts` actually confirms:
 
-- 이전 `send_status='sent'` fixture DB를 만들고 새 `SqliteSendLog`로 열었을 때 `wasSent()=true`,
-  `claim()=false`, `list()`가 원래 `messageId`/`sentAt`을 그대로 보존한 채 `sendStatus='sent'`로
-  반환하는지.
-- `failed`/`skipped_duplicate` 행은 옮겨지지 않아 그 키를 다시 `claim()`할 수 있는지.
-- 마이그레이션 후 `send_log_v1_backup_*` 테이블이 원본 행 그대로 남아 있는지(raw SQLite 쿼리로
-  직접 확인).
-- `send_log_new` 임시 테이블이 이미 있는 상태(중단된 마이그레이션 흉내)에서 생성자가 던지고,
-  원본 v1 `send_log` 테이블의 컬럼/행이 마이그레이션 시도 전과 동일하게 남아 있는지.
-- 이미 v2 스키마인 DB는 마이그레이션 없이(백업 테이블 생성 없이) 그대로 열리는지.
-- v1도 v2도 아닌 알 수 없는 컬럼 구성은 명시적 에러를 던지는지.
+- That when a fixture DB with the previous `send_status='sent'` is created and opened with the new
+  `SqliteSendLog`, `wasSent()=true`, `claim()=false`, and `list()` returns the original
+  `messageId`/`sentAt` unchanged along with `sendStatus='sent'`.
+- That `failed`/`skipped_duplicate` rows are not carried over, so that key can be `claim()`'d
+  again.
+- That, after migration, the `send_log_v1_backup_*` table remains with the original rows intact
+  (confirmed directly via a raw SQLite query).
+- That, when the `send_log_new` temp table already exists (simulating an interrupted migration),
+  the constructor throws, and the original v1 `send_log` table's columns/rows remain identical to
+  before the migration attempt.
+- That a DB that is already on the v2 schema opens as-is without migration (without creating a
+  backup table).
+- That an unrecognized column configuration that is neither v1 nor v2 throws an explicit error.
 
-`npm run recover:stale-claim`으로도 실제 v1 DB 파일을 만들어 수동 실행 확인함(§4 참고).
+Also manually confirmed by creating an actual v1 DB file and running `npm run recover:stale-claim`
+against it (see §4).
 
-### 완전 해소 기준 대조
+### Full-resolution criteria comparison
 
-STATUS-GAP-001의 7개 완전 해소 기준(문서 원문) 중 "README 또는 운영 문서에 업그레이드 및 백업
-절차가 있다"까지 포함해 전부 충족했다 — README `운영` 절, `docs/DESIGN.md` §6에 반영(§6 참고).
+Of STATUS-GAP-001's 7 full-resolution criteria (as written in the original document), all were
+met, including "the README or operational documentation has an upgrade and backup procedure" —
+reflected in the README `Operations` section and `docs/DESIGN.md` §6 (see §6).
 
-## 3. STATUS-GAP-002 — olderThanMs 입력 검증
+## 3. STATUS-GAP-002 — olderThanMs input validation
 
-### 조치
+### Action
 
-`src/core/types.ts`에 `assertValidStaleClaimThreshold(olderThanMs)`를 신설했다. `Number.isInteger`
-검사 하나로 음수/NaN/Infinity/소수를 전부 거부한다(NaN·Infinity는 애초에 `isInteger`가 false).
-`SqliteSendLog.forceReleaseStaleClaim()`과 `InMemorySendLog.forceReleaseStaleClaim()` 양쪽 모두
-이 **하나의 공통 함수**를 함수 맨 앞에서 호출해, 검증에 실패하면 cutoff 계산이나 DELETE/삭제
-로직에 도달하기 전에 던진다 — 잘못된 입력에서는 어떤 claim도 건드려지지 않는다.
+`assertValidStaleClaimThreshold(olderThanMs)` was newly added to `src/core/types.ts`. A single
+`Number.isInteger` check rejects negative/NaN/Infinity/fractional values altogether (NaN/Infinity
+already make `isInteger` false to begin with). Both `SqliteSendLog.forceReleaseStaleClaim()` and
+`InMemorySendLog.forceReleaseStaleClaim()` call this **single common function** at the very start
+of the function, so it throws before ever reaching the cutoff calculation or the DELETE/removal
+logic — no claim is touched on invalid input.
 
-### 검증
+### Verification
 
-두 어댑터의 테스트 파일에 각각 `it.each([-1, NaN, Infinity, -Infinity, 1.5])` 파라미터화 테스트를
-추가해, 5개 경계값 전부가 즉시 에러를 던지고 방금 만든 claim이 그대로 남아 있는지(`wasSent()`로
-확인) 검증한다. `olderThanMs=0`은 유효한 값으로 허용됨도 별도 테스트로 확인했다.
+Parameterized tests using `it.each([-1, NaN, Infinity, -Infinity, 1.5])` were added to each
+adapter's test file, verifying that all 5 boundary values immediately throw an error and that the
+just-created claim remains intact (confirmed via `wasSent()`). It was also separately verified via
+a test that `olderThanMs=0` is allowed as a valid value.
 
-### 완전 해소 기준 대조
+### Full-resolution criteria comparison
 
-"운영용 복구 경로에서는 0보다 큰 보수적인 최소값을 별도로 강제한다"는 이 함수 자체가 아니라
-STATUS-GAP-003의 CLI가 담당한다(5분 미만은 `--i-understand-the-risk` 없이 거부, §4).
-"0ms 허용 여부와 운영 최소값 정책이 DESIGN 및 운영 문서에 명시된다"는 `docs/DESIGN.md` §6에
-반영했다.
+"The operational recovery path separately enforces a conservative minimum greater than 0" is
+handled not by this function itself but by the STATUS-GAP-003 CLI (rejecting anything under 5
+minutes without `--i-understand-the-risk`, §4). "Whether 0ms is allowed and the operational minimum
+policy are documented in DESIGN and operational docs" has been reflected in `docs/DESIGN.md` §6.
 
-## 4. STATUS-GAP-003 — stale claim 사람 전용 복구 CLI
+## 4. STATUS-GAP-003 — Human-only stale claim recovery CLI
 
-### 조치
+### Action
 
-`scripts/recoverStaleClaim.ts` 신규(`npm run recover:stale-claim`). 요구했던 흐름을 그대로
-구현했다.
+New `scripts/recoverStaleClaim.ts` (`npm run recover:stale-claim`). It implements the requested
+flow exactly.
 
-- **기본은 read-only 조회**: `--confirm` 없이 실행하면 DB를 `new Database(path, {readonly:true})`로
-  연다 — 구조적으로 SQLite 자체가 어떤 쓰기도 거부하므로, 이 경로는 코드에 버그가 있어도
-  아무 것도 지울 수 없다. claim 존재 여부, `committed` 여부, claim(또는 확정) 이후 경과 시간을
-  출력한다.
-- **명시적 확인 없이는 삭제 없음**: `--confirm`이 있어야만 (그리고 그 시점에만) 쓰기 가능한
-  연결로 `SqliteSendLog`를 열어 `forceReleaseStaleClaim()`을 호출한다.
-- **확정 sent 기록은 어떤 옵션으로도 삭제 불가**: `forceReleaseStaleClaim()` 자체가
-  `committed=0`인 행만 대상으로 하므로(§ GAP-001/GAP-009), CLI가 별도로 재확인해도 그 아래 계층이
-  이미 막고 있다. CLI는 조회 결과가 `committed=true`면 `--confirm`을 줘도 애초에
-  `forceReleaseStaleClaim()`을 호출하지 않고 "회수할 대상이 없다"고 안내한다.
-- **운영 최소값**: `--older-than-ms` 기본값 30분, **5분 미만은 `--i-understand-the-risk` 플래그
-  없이는 거부**한다(STATUS-GAP-002의 완전 해소 기준에서 요구한 "운영용 복구 경로의 보수적 최소값").
-- **감사 로그**: 조회(`inspect`)와 실제 회수(`force_release`) 둘 다 `data/recovery-audit.log`(JSON
-  Lines, `RECOVERY_AUDIT_LOG_PATH`로 재지정 가능)에 시각·인자·결과·`--reason`을 기록한다. 시트
-  값이나 이메일 본문 등 민감정보는 애초에 이 스크립트가 다루지 않는다(sheetId/tab/rowKey/
-  templateHash는 AR-009 기준으로 이미 비민감 메타데이터로 취급됨).
-- **재발송 안내**: 회수에 성공하면 "재발송 전에 Provider 대시보드에서 실제로 이미 발송되지
-  않았는지 확인하라"는 경고를 출력하고, 이 스크립트 자체는 재발송을 수행하지 않는다(별도로
-  파이프라인을 다시 실행해야 함을 명시).
+- **Defaults to a read-only lookup**: running without `--confirm` opens the DB via
+  `new Database(path, {readonly:true})` — since SQLite itself structurally refuses any write, this
+  path cannot delete anything even if there were a bug in the code. It prints whether the claim
+  exists, whether it is `committed`, and the elapsed time since the claim (or confirmation).
+- **No deletion without explicit confirmation**: only with `--confirm` (and only at that point)
+  does it open a writable connection to `SqliteSendLog` and call `forceReleaseStaleClaim()`.
+- **A confirmed sent record cannot be deleted by any option**: since `forceReleaseStaleClaim()`
+  itself only targets rows with `committed=0` (see GAP-001/GAP-009), even if the CLI re-checks
+  separately, the layer below is already blocking it. If the lookup result shows
+  `committed=true`, the CLI does not even call `forceReleaseStaleClaim()` even when given
+  `--confirm`, and instead reports that "there is nothing to reclaim."
+- **Operational minimum**: `--older-than-ms` defaults to 30 minutes, and **anything under 5 minutes
+  is rejected without the `--i-understand-the-risk` flag** (the "conservative minimum for the
+  operational recovery path" required by STATUS-GAP-002's full-resolution criteria).
+- **Audit log**: both lookup (`inspect`) and actual reclaim (`force_release`) record the time,
+  arguments, result, and `--reason` to `data/recovery-audit.log` (JSON Lines, relocatable via
+  `RECOVERY_AUDIT_LOG_PATH`). This script does not handle sensitive information such as sheet
+  values or email bodies to begin with (sheetId/tab/rowKey/templateHash are already treated as
+  non-sensitive metadata, per the AR-009 standard).
+- **Re-send guidance**: on a successful reclaim, it prints a warning to "verify on the Provider
+  dashboard, before re-sending, that it was not actually already sent," and the script itself does
+  not perform a re-send (it explicitly states the pipeline must be run again separately).
 
-### 검증
+### Verification
 
-실제로 v2 스키마 DB 파일을 만들어 4단계(조회 → 너무 짧은 `--older-than-ms` 거부 → 정상 회수 →
-회수 후 재조회)를 수동으로 실행해 출력과 감사 로그 내용을 확인했다(이 문서 작성 세션에서 직접
-실행, 결과는 기대한 그대로였고 임시 산출물은 정리함). `npm run check`에는 포함하지 않는다 —
-`smoke.ts`와 같은 성격의 사람 전용 도구다.
+An actual v2-schema DB file was created and 4 stages (lookup → rejection of a too-short
+`--older-than-ms` → normal reclaim → re-lookup after reclaim) were run manually, confirming the
+output and the audit log contents (run directly in the session that authored this document; the
+result was as expected, and temporary artifacts were cleaned up). It is not included in
+`npm run check` — it is a human-only tool of the same character as `smoke.ts`.
 
-### 완전 해소 기준 대조
+### Full-resolution criteria comparison
 
-문서가 요구한 6개 기준(제품 코드 수정 없이 조회, 기본 read-only, 잘못된 키/젊은 claim/확정 sent
-안전 거부, 명시적 승인 없이 삭제 안 함, 감사 가능한 기록, 권장 `olderThanMs` 결정 기준과 Provider
-확인 절차 문서화) 전부 충족했다.
+All 6 criteria required by the document (lookup without modifying product code, defaulting to
+read-only, safely rejecting an invalid key/young claim/confirmed sent, no deletion without explicit
+approval, an auditable record, and documenting the recommended `olderThanMs` decision criteria and
+Provider verification procedure) were met.
 
-## 5. STATUS-GAP-004 — 상태 컬럼 의미(GAP-005) 정책 결정
+## 5. STATUS-GAP-004 — Status column meaning (GAP-005) policy decision
 
-STATUS-GAP-004는 코드 버그가 아니라 "네 상태 컬럼만으로 과거 성공/현재 실패를 구분하기 어렵다"는
-**제품 정책 미결정**이었다. 이번에 세 옵션(A: 마지막 시도만 표시, B: 시도/성공 컬럼 분리, C: 현재
-혼합 정책 유지 + 계약 명확화) 중 **옵션 C**를 채택해 결정을 확정했다.
+STATUS-GAP-004 was not a code bug but a **product policy that had not been decided**: "it is
+difficult to distinguish a past success from a current failure using only the 4 status columns."
+This time, among the three options (A: show only the last attempt, B: split into attempt/success
+columns, C: keep the current mixed policy + clarify the contract), **Option C** was adopted, and
+the decision is now finalized.
 
-### 결정 이유
+### Reason for the decision
 
-- 옵션 B(컬럼 분리)는 기존 사용자의 시트 스키마 변경(컬럼 추가)을 강제해 v0.1 범위를 넘는 마이그
-  레이션 부담을 준다.
-- 옵션 A(마지막 시도만 표시하고 과거 성공은 항상 SendLog 조회)는 시트만 보는 사람이 "이 행이
-  과거에 한 번이라도 성공했는지"를 확인할 수 없게 되어, AR-014가 애초에 보존하려던 감사 가치를
-  없앤다.
-- 옵션 C는 코드 변경이 전혀 필요 없고(현재 구현이 이미 이 정책과 일치), "계약을 명확히 문서화하지
-  않았다"는 것이 실제 결함이었으므로 문서 보강만으로 완전히 해소된다.
+- Option B (splitting the columns) would force a sheet schema change (adding columns) on existing
+  users, imposing a migration burden beyond the v0.1 scope.
+- Option A (showing only the last attempt, always looking up past successes from SendLog) would
+  make it impossible for someone looking only at the sheet to check "has this row ever succeeded
+  in the past," eliminating the audit value that AR-014 originally intended to preserve.
+- Option C requires no code changes at all (the current implementation already matches this
+  policy), and since "the contract was not clearly documented" was the actual defect, it is fully
+  resolved by documentation alone.
 
-### 조치
+### Action
 
-`docs/DESIGN.md` §2에 "정책 결정(STATUS-GAP-004, GAP-005 후속)" 절을 추가해 다음을 명문화했다.
+A "Policy decision (STATUS-GAP-004, GAP-005 follow-up)" section was added to `docs/DESIGN.md` §2,
+formalizing the following.
 
-- `_send_status`는 항상 **가장 최근 실행(마지막 시도)** 만을 나타낸다.
-- `failed`/`skipped_duplicate`일 때 `_message_id`/`_sent_at`에 값이 있어도 그건 과거 시도의 감사
-  기록이지 "이번 실행이 성공했다"는 뜻이 아니다 — 자동화는 반드시 `_send_status`만으로 성공/실패를
-  판정해야 한다.
-- "이 행/템플릿 조합이 과거에 실제로 발송된 적 있는가"는 시트가 아니라 `SendLog.wasSent()`/
-  `list()`(`get_send_log` MCP 도구)로 조회해야 한다 — SendLog가 진실의 원천이다.
-- 옵션 B는 v0.1에서 채택하지 않는다는 점도 명시했다(향후 필요해지면 별도 태스크로 재논의).
+- `_send_status` always represents only the **most recent run (last attempt)**.
+- Even if `_message_id`/`_sent_at` has a value when the status is `failed`/`skipped_duplicate`,
+  that is an audit record of a past attempt, not a statement that "this run succeeded" —
+  automation must judge success/failure solely by `_send_status`.
+- "Has this row/template combination ever actually been sent in the past" should be looked up via
+  `SendLog.wasSent()`/`list()` (the `get_send_log` MCP tool), not the sheet — SendLog is the source
+  of truth.
+- It also states explicitly that Option B is not adopted in v0.1 (to be revisited as a separate
+  task if it becomes necessary in the future).
 
-### 완전 해소 기준 대조
+### Full-resolution criteria comparison
 
-"사람이 A/B/C 중 정책을 결정한다"는 이 문서 자체가 그 결정이다. "SPEC, DESIGN, 시트 컬럼명,
-파이프라인, 어댑터 테스트가 같은 의미를 사용한다"는 이미 일치하고 있었고(코드는 애초에 옵션 C대로
-동작 중이었다), 이번에 DESIGN.md에 그 의미를 명문화해 "왜 이렇게 동작하는지"를 문서만 보고도 알 수
-있게 했다. 전이 규칙(sent→failed, failed→sent, sent→duplicate)이 모호하지 않다는 것도 기존
-`toStatusUpdate()`와 AR-014 회귀 테스트로 이미 검증돼 있다(변경 없음).
+"A human decides among policies A/B/C" — this document itself is that decision. "SPEC, DESIGN, the
+sheet column names, the pipeline, and the adapter tests use the same meaning" was already the case
+(the code was already behaving according to Option C from the start), and this time the meaning has
+been formalized in DESIGN.md so that "why it behaves this way" can be understood from the
+documentation alone. That the transition rules (sent→failed, failed→sent, sent→duplicate) are
+unambiguous has also already been verified via the existing `toStatusUpdate()` and the AR-014
+regression test (unchanged).
 
-## 6. STATUS-GAP-005 — 실제 Google Sheet+Resend 수동 스모크 (미해소)
+## 6. STATUS-GAP-005 — Actual Google Sheet+Resend manual smoke test (unresolved)
 
-이번 세션에도 `.env` 파일이 존재하지 않고(확인함), 실제 Google 서비스 계정 키·Resend API 키·테스트
-전용 구글시트가 없다. 코드/CLI/문서만으로는 이 항목을 대신할 수 없다 — 실제 발송 인프라와 사람의
-승인이 필요한 항목이라는 것이 GAP-007/AR-016 때부터 반복해서 확인된 성격이다.
+This session too, no `.env` file exists (confirmed), and there is no actual Google service account
+key, Resend API key, or dedicated test Google Sheet. This item cannot be substituted through
+code/CLI/documentation alone — it requires actual send infrastructure and human approval, a
+character repeatedly confirmed since GAP-007/AR-016.
 
-완전 해소 기준(문서 원문 §2 STATUS-GAP-005) 7단계는 그대로 유효하며, 실행 준비(스모크 코드, 이중
-안전장치, `MANUAL SMOKE PENDING` 표시)는 이미 되어 있다. **사람이 실제 자격증명으로
-`npm run smoke`(dry-run) → `SEND_MODE=live SMOKE_CONFIRM_SEND=1 npm run smoke`(실발송 1건) →
-재실행(중복 차단 확인) 순서로 직접 수행하고, 그 결과를 별도 감사 문서에 남겨야 완전 해소로
-표시할 수 있다.**
+The 7 steps of the full-resolution criteria (as written in the original document, §2
+STATUS-GAP-005) remain valid as-is, and the execution readiness (smoke test code, dual safeguards,
+`MANUAL SMOKE PENDING` marker) is already in place. **It can only be marked as fully resolved once
+a human directly performs, with actual credentials, `npm run smoke` (dry-run) →
+`SEND_MODE=live SMOKE_CONFIRM_SEND=1 npm run smoke` (an actual 1-item send) → a re-run (confirming
+the duplicate block) in that order, and records the results in a separate audit document.**
 
-## 7. OBS-001 — claim 복구 임계값 운영 확정 (미해소, 의도적으로 그대로 둠)
+## 7. OBS-001 — Finalizing the claim recovery threshold operationally (unresolved, intentionally left as-is)
 
-`forceReleaseStaleClaim(olderThanMs)`의 실제 운영 기본값은 이번에도 코드 상수로 확정하지 않았다.
-STATUS-GAP-003 CLI에 넣은 "5분 미만은 `--i-understand-the-risk` 없이 거부"는 **입력 실수 방지용
-가드**일 뿐, "실제로 몇 분이 적절한 stale 기준인가"라는 운영 정책 질문에 대한 답은 아니다. 이
-값은 Resend 응답 지연, 재시도 정책, 운영자가 대시보드를 확인하는 데 걸리는 실제 시간처럼 실제
-운영 데이터가 쌓여야 정할 수 있다 — STATUS-GAP-005의 실제 스모크가 선행돼야 의미 있는 값을 고를
-수 있으므로, 그 전까지는 미해소로 남겨 둔다.
+The actual operational default for `forceReleaseStaleClaim(olderThanMs)` was again not finalized as
+a code constant this time. The "reject anything under 5 minutes without
+`--i-understand-the-risk`" added to the STATUS-GAP-003 CLI is merely an **input-mistake-prevention
+guard**, not an answer to the operational policy question of "how many minutes is actually the
+right stale threshold." This value can only be set once real operational data has accumulated —
+things like Resend response latency, the retry policy, and the actual time it takes an operator to
+check the dashboard — so since STATUS-GAP-005's actual smoke test must come first for a meaningful
+value to be chosen, it is left unresolved until then.
 
-## 8. OBS-002 — 기존 DB 삭제 안내 문서화
+## 8. OBS-002 — Documenting existing DB deletion guidance
 
-STATUS-GAP-001 조치로 "DB를 지우고 다시 만들라"는 안내 자체가 더 이상 필요하지 않게 됐다(자동
-마이그레이션이 무손실이므로). 대신 새 자동 업그레이드 동작과 STATUS-GAP-003 복구 CLI 사용법을
-`README.md`의 신규 "운영 — 기존 DB 업그레이드 / stale claim 복구" 절과 `docs/DESIGN.md` §6에
-추가했다.
+With the STATUS-GAP-001 action, the guidance of "delete the DB and recreate it" is no longer needed
+in the first place (since the automatic migration is lossless). Instead, the new automatic upgrade
+behavior and how to use the STATUS-GAP-003 recovery CLI have been added to a new
+"Operations — Upgrading an existing DB / stale claim recovery" section in `README.md` and to
+`docs/DESIGN.md` §6.
 
-## 9. 자동 품질 게이트
+## 9. Automated quality gate
 
 ```
 npm run check
   ✓ typecheck (tsc --noEmit)
   ✓ lint (eslint .)
   ✓ format:check (prettier --check .)
-  ✓ test (vitest run) — 13 test files, 174 tests passed (기존 156 + 신규 18)
+  ✓ test (vitest run) — 13 test files, 174 tests passed (156 existing + 18 new)
 
 npm run test:coverage
-  core/ 전체 93.36% stmts/lines (기존 93.24%에서 소폭 상승 — types.ts 100% 유지)
+  core/ overall 93.36% stmts/lines (a slight rise from 93.24% — types.ts maintained at 100%)
 ```
 
-kingfish/DevWork 두 워크트리 모두에서 동일하게 확인함(§10 커밋 동기화 참고).
+Confirmed identically in both the kingfish and DevWork worktrees (see §10 on commit
+synchronization).
 
-## 10. 추적 규칙
+## 10. Tracking rule
 
-- 이 문서는 `docs/ADVERSARIAL_REVIEW_003_STATUS_GAPS.md`를 덮어쓰지 않는다.
-- STATUS-GAP-005와 OBS-001은 실제 스모크 증거가 기록되기 전까지 미해소로 유지한다 — 코드
-  게이트 통과나 이 문서의 존재를 근거로 "완전 해소"라고 말하지 않는다.
-- 이후 재검수가 나오면 `docs/ADVERSARIAL_REVIEW_004.md`로 새로 시작한다(기존 체인은 보존).
+- This document does not overwrite `docs/ADVERSARIAL_REVIEW_003_STATUS_GAPS.md`.
+- STATUS-GAP-005 and OBS-001 remain unresolved until actual smoke test evidence is recorded — the
+  gate passing or the existence of this document is not grounds for saying "fully resolved."
+- If a subsequent re-review is produced, it will start freshly as
+  `docs/ADVERSARIAL_REVIEW_004.md` (the existing chain is preserved).

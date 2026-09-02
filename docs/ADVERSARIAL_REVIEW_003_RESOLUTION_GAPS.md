@@ -1,268 +1,268 @@
-# 적대적 검수 리포트 003 — 미해소 내역 재검증
+# Adversarial Review Report 003 — Re-verification of Unresolved Items
 
-- 재검증일: 2026-09-01
-- 대상 리포트: `docs/ADVERSARIAL_REVIEW_003.md`
-- 대상 수정 기록: `docs/ADVERSARIAL_REVIEW_003_RESOLUTION.md`
-- 기준 리비전: `fa8b5b6` (`AR-011~018: 적대적 검수 리포트 003 반영`)
-- 검수 원칙: 수정 기록의 선언이나 테스트 통과만으로 해소 판정하지 않고, 원래 실패 경로와 운영 중단·복구 경로를 보수적으로 재검증
-- 변경 원칙: 제품 코드는 변경하지 않고 미해소 사항만 별도 기록
+- Re-verification date: 2026-09-01
+- Target report: `docs/ADVERSARIAL_REVIEW_003.md`
+- Target resolution record: `docs/ADVERSARIAL_REVIEW_003_RESOLUTION.md`
+- Baseline revision: `fa8b5b6` (`AR-011~018: apply Adversarial Review Report 003`)
+- Review principle: do not judge an item resolved based solely on the resolution record's claims or passing tests — conservatively re-verify against the original failure path and the operational outage/recovery path
+- Change principle: do not modify product code; record only the unresolved items separately
 
-## 1. 결론
+## 1. Conclusion
 
-`ADVERSARIAL_REVIEW_003_RESOLUTION.md`의 "AR-011~018 전 항목 조치"는 코드 변경 여부를 뜻하는 표현으로는 맞지만, "전 항목 완전 해소"로 해석하면 정확하지 않다.
+The claim in `ADVERSARIAL_REVIEW_003_RESOLUTION.md` that "AR-011~018 all items addressed" is accurate as a statement about whether code was changed, but is inaccurate if interpreted as "all items fully resolved."
 
-보수적 재검증 결과:
+Conservative re-verification results:
 
-| 항목 | 재검증 판정 | 요약 |
+| Item | Re-verification verdict | Summary |
 | --- | --- | --- |
-| AR-011 | 부분 해소 | 동시 claim은 원자적이나 중단된 claim의 만료·복구가 없어 미발송 행이 영구 차단될 수 있음 |
-| AR-012 | 부분 해소 | dotenv는 로드되지만 smoke의 `SMOKE_SHOW_VALUES`는 로드 전에 평가됨 |
-| AR-013 | 부분 해소 | API 결과는 `sent_log_failed`지만 SQLite에는 claim이 계속 `sent`로 노출됨 |
-| AR-014 | 부분 해소 | failed→sent 잔여 오류는 정리되지만 sent→failed의 모순 상태는 정책적으로 유지됨 |
-| AR-015 | 부분 해소 | 응답 상한은 생겼지만 cursor가 없고 `truncated`가 부정확함 |
-| AR-016 | 미완료 | 실제 Google Sheet+Resend 수동 스모크가 수행되지 않음 |
-| AR-017 | 완전 해소 | 명백한 불량 이메일이 발송 전에 차단되고 회귀 테스트가 존재함 |
-| AR-018 | 대체로 해소 | smoke 정리는 적절하나 서버 종료 수명주기와 반복 생성 검증이 충분하지 않음 |
+| AR-011 | Partially resolved | Concurrent claims are atomic, but there is no expiration/recovery for interrupted claims, so unsent rows can be permanently blocked |
+| AR-012 | Partially resolved | dotenv is loaded, but smoke's `SMOKE_SHOW_VALUES` is evaluated before loading |
+| AR-013 | Partially resolved | The API result is `sent_log_failed`, but the claim continues to be exposed as `sent` in SQLite |
+| AR-014 | Partially resolved | Leftover errors in the failed→sent transition are cleaned up, but the contradictory state of sent→failed is intentionally retained as policy |
+| AR-015 | Partially resolved | A response cap now exists, but there is no cursor and `truncated` is inaccurate |
+| AR-016 | Incomplete | Actual manual smoke testing with Google Sheet+Resend has not been performed |
+| AR-017 | Fully resolved | Clearly malformed emails are blocked before sending, and a regression test exists |
+| AR-018 | Largely resolved | smoke cleanup is adequate, but the server shutdown lifecycle and repeated-creation verification are insufficient |
 
-또한 수정 과정에서 템플릿 해시 구분자가 NUL에서 공백으로 바뀌어 서로 다른 템플릿이 같은 해시를 만들 수 있는 신규 회귀가 확인됐다.
+Additionally, during the fix process it was confirmed that the template hash delimiter changed from NUL to a space, which is a new regression that can cause different templates to produce the same hash.
 
-## 2. 미해소 및 부분 해소 상세
+## 2. Details of Unresolved and Partially Resolved Items
 
-### GAP-001 — 중단된 claim이 영구 `sent` 기록으로 남음
+### GAP-001 — Interrupted claims remain permanently recorded as `sent`
 
-- 연결 항목: AR-011
-- 심각도: 높음
-- 위치:
+- Linked item: AR-011
+- Severity: High
+- Location:
   - `src/adapters/sqliteSendLog.ts:77-98`
   - `src/core/pipeline.ts:253-307`
   - `src/core/types.ts:99-131`
-- 현상:
-  - `SqliteSendLog.claim()`은 발송 전에 DB 행을 삽입하면서 즉시 `send_status='sent'`를 기록한다.
-  - claim 성공 후 Provider 호출 전이나 호출 도중 프로세스가 강제 종료되면 `commit()`과 `release()`가 모두 실행되지 않는다.
-  - 해당 행은 실제 발송 여부와 무관하게 `wasSent()=true`가 되고, 이후 실행은 영구적으로 `skipped_duplicate` 처리한다.
-  - claim에 만료 시각, 별도 `claimed` 상태, 소유 토큰, 복구 명령이 없다.
-- 영향:
-  - 실제로 발송되지 않은 고객이 발송 완료로 간주될 수 있다.
-  - 운영자는 `get_send_log`에서도 이를 정상 `sent`로 보게 되어 누락을 발견하기 어렵다.
-  - AR-011의 중복 발송 경쟁은 완화됐지만, 그 대신 영구 발송 누락 위험이 생겼다.
-- 필요한 조치:
-  1. DB 상태를 `claimed`와 `sent`로 분리한다.
-  2. claim에 `claim_token`, `claimed_at`, 만료 정책을 둔다.
-  3. 만료 claim은 자동 재확정보다 수동 확인 또는 명시적 복구 절차를 우선한다. Provider가 이미 처리했을 가능성이 있기 때문이다.
-  4. 정상 실패는 token이 일치할 때만 release하고 정상 성공은 token이 일치할 때만 commit한다.
-- 완전 해소 기준:
-  - claim 후 프로세스 중단을 모사한 테스트가 존재한다.
-  - 미확정 claim이 `sent`로 조회되지 않는다.
-  - 만료·복구·수동 확인 정책이 `DESIGN.md`에 명시된다.
+- Symptom:
+  - `SqliteSendLog.claim()` inserts a DB row before sending and immediately records `send_status='sent'`.
+  - If the process is force-killed after a successful claim but before or during the Provider call, neither `commit()` nor `release()` runs.
+  - That row becomes `wasSent()=true` regardless of whether it was actually sent, and subsequent runs permanently treat it as `skipped_duplicate`.
+  - The claim has no expiration timestamp, no separate `claimed` state, no ownership token, and no recovery command.
+- Impact:
+  - A customer who was never actually sent a message can be treated as having been sent one.
+  - Operators will also see this as a normal `sent` in `get_send_log`, making the omission hard to discover.
+  - AR-011's duplicate-send race has been mitigated, but in its place a permanent send-omission risk has been introduced.
+- Required action:
+  1. Separate the DB state into `claimed` and `sent`.
+  2. Add a `claim_token`, `claimed_at`, and an expiration policy to the claim.
+  3. For expired claims, prefer manual confirmation or an explicit recovery procedure over automatic re-confirmation, because the Provider may have already processed it.
+  4. On genuine failure, release only when the token matches; on genuine success, commit only when the token matches.
+- Full-resolution criteria:
+  - A test exists that simulates a process interruption after claim.
+  - An unconfirmed claim is not shown as `sent` when queried.
+  - The expiration/recovery/manual-confirmation policy is specified in `DESIGN.md`.
 
-### GAP-002 — commit 실패 상태가 SQLite에 `sent_log_failed`로 보존되지 않음
+### GAP-002 — Commit-failure state is not preserved as `sent_log_failed` in SQLite
 
-- 연결 항목: AR-013
-- 심각도: 높음
-- 위치:
+- Linked item: AR-013
+- Severity: High
+- Location:
   - `src/core/pipeline.ts:270-296`
   - `src/adapters/sqliteSendLog.ts:87-90`, `100-120`
-- 현상:
-  - Provider 성공 후 `commit()`이 실패하면 파이프라인의 이번 응답과 시트에는 `sent_log_failed`가 표시된다.
-  - 그러나 DB claim은 생성 시점부터 `send_status='sent'`이며, commit 실패 시 이를 `sent_log_failed`로 바꾸는 별도 저장 경로가 없다.
-  - 따라서 프로세스가 끝난 뒤 `get_send_log`를 조회하면 장애가 정상 `sent`로 보일 수 있다.
-  - 시트 write-back마저 실패하면 `sent_log_failed` 사실은 stderr 외에는 구조적으로 남지 않는다.
-- 영향:
-  - 수정 기록이 주장하는 "사람이 SendLog와 시트를 확인"하는 절차에서 SendLog가 잘못된 정보를 제공한다.
-  - 장애 조사와 수동 복구 판단이 어려워진다.
-- 필요한 조치:
-  - claim 상태와 최종 상태를 분리하고, commit 실패를 durable하게 기록할 수 있는 별도 best-effort 경로 또는 append-only incident log를 둔다.
-  - 적어도 확정되지 않은 claim을 정상 `sent`로 반환하지 않는다.
-  - `sent_log_failed`를 `sent`/`failed`/`skipped` 집계 어디에도 넣지 않는 현재 응답은 합계 불변식을 깨므로 별도 `uncertain` 또는 `logFailed` 집계를 추가한다.
-- 완전 해소 기준:
-  - 실제 SQLite 구현에서 commit 실패 후 재기동해도 장애 상태를 구분할 수 있다.
-  - `get_send_log`가 해당 행을 정상 `sent`로 반환하지 않는다.
-  - `details.length`와 집계 합계의 관계가 문서화되고 테스트된다.
+- Symptom:
+  - If `commit()` fails after a successful Provider call, `sent_log_failed` is shown in this run's pipeline response and in the sheet.
+  - However, the DB claim has been `send_status='sent'` since the moment it was created, and there is no separate storage path that changes it to `sent_log_failed` when the commit fails.
+  - Therefore, if `get_send_log` is queried after the process ends, the failure can appear as a normal `sent`.
+  - If the sheet write-back also fails, the fact of `sent_log_failed` is left with no structural record other than stderr.
+- Impact:
+  - In the procedure the resolution record claims — "a human checks the SendLog and the sheet" — SendLog provides incorrect information.
+  - Incident investigation and manual-recovery decisions become harder.
+- Required action:
+  - Separate claim state from final state, and provide a separate best-effort path or an append-only incident log that can durably record commit failures.
+  - At minimum, do not return an unconfirmed claim as normal `sent`.
+  - The current response, which does not put `sent_log_failed` into any of the `sent`/`failed`/`skipped` aggregates, breaks the sum invariant, so add a separate `uncertain` or `logFailed` aggregate.
+- Full-resolution criteria:
+  - In the actual SQLite implementation, the failure state can still be distinguished after a restart following a commit failure.
+  - `get_send_log` does not return that row as normal `sent`.
+  - The relationship between `details.length` and the aggregate sums is documented and tested.
 
-### GAP-003 — release 실패가 행 격리를 깨고 전체 배치를 중단할 수 있음
+### GAP-003 — A release failure can break row isolation and halt the entire batch
 
-- 연결 항목: AR-011, AR-013
-- 심각도: 높음
-- 위치: `src/core/pipeline.ts:297-306`
-- 현상:
-  - Provider가 `ok=false`를 반환하면 `release()`를 호출한 뒤 행을 failed로 바꾼다.
-  - 이 `release()`가 DB 잠금·IO 오류 등으로 throw하면 바깥 catch가 다시 `release()`를 호출한다.
-  - 두 번째 release도 throw하면 예외가 `attemptSend()` 밖으로 전파되어 다음 행 처리가 중단된다.
-  - Provider 자체가 throw한 경로에서도 catch 내부의 release 실패는 그대로 전파된다.
-- 영향:
-  - "한 행 실패가 나머지 배치를 중단하지 않는다"는 핵심 파이프라인 계약이 SendLog 장애에서는 지켜지지 않는다.
-  - 실패한 claim도 남아 다음 실행을 영구 차단할 수 있다.
-- 필요한 조치:
-  - Provider 오류와 release 오류를 별도 상태로 모델링한다.
-  - release를 중복 호출하지 않고, release 실패가 다른 행 처리를 중단하지 않게 격리한다.
-  - release 실패 역시 재발송 안전성을 고려한 durable incident 상태로 남긴다.
-- 완전 해소 기준:
-  - `release()` 실패 주입 시 이후 행도 계속 처리된다.
-  - Provider 호출 수와 최종 상세 상태가 명확하다.
-  - 같은 행의 후속 실행 정책이 테스트로 고정된다.
+- Linked item: AR-011, AR-013
+- Severity: High
+- Location: `src/core/pipeline.ts:297-306`
+- Symptom:
+  - When the Provider returns `ok=false`, `release()` is called and then the row is changed to failed.
+  - If this `release()` throws due to a DB lock, IO error, etc., the outer catch calls `release()` again.
+  - If the second release also throws, the exception propagates out of `attemptSend()`, halting processing of subsequent rows.
+  - Even on the path where the Provider itself throws, a release failure inside the catch propagates the same way.
+- Impact:
+  - The core pipeline contract that "one row's failure does not halt the rest of the batch" is not upheld when there is a SendLog failure.
+  - A failed claim can also remain and permanently block the next run.
+- Required action:
+  - Model Provider errors and release errors as separate states.
+  - Do not call release redundantly, and isolate release failures so they do not halt processing of other rows.
+  - Also leave release failures as a durable incident state that accounts for resend safety.
+- Full-resolution criteria:
+  - When a `release()` failure is injected, subsequent rows continue to be processed.
+  - The number of Provider calls and the final detail state are clear.
+  - The follow-up-run policy for the same row is pinned down by a test.
 
-### GAP-004 — `.env`의 `SMOKE_SHOW_VALUES`가 적용되지 않음
+### GAP-004 — `SMOKE_SHOW_VALUES` from `.env` is not applied
 
-- 연결 항목: AR-012
-- 심각도: 중간
-- 위치: `scripts/smoke.ts:24`, `43-49`
-- 현상:
-  - `SHOW_VALUES` 상수는 모듈 로드 시 `process.env.SMOKE_SHOW_VALUES`를 읽는다.
-  - dotenv는 그보다 나중인 `main()` 안에서 호출된다.
-  - 따라서 셸에서 직접 export하지 않고 `.env`에만 `SMOKE_SHOW_VALUES=1`을 적은 경우 실제 값 출력이 활성화되지 않는다.
-- 영향:
-  - README/.env 계약이 일부 환경변수에서 여전히 일관되지 않다.
-  - 민감정보가 의도치 않게 출력되는 방향은 아니므로 안전상 fail-closed지만, 진단 옵션이 문서대로 동작하지 않는다.
-- 필요한 조치:
-  - dotenv 로드 후 `SHOW_VALUES`를 계산하거나 `formatDetail()`에 명시적으로 전달한다.
-  - `.env`만 사용한 자식 프로세스 테스트로 `SMOKE_SHOW_VALUES` 적용을 확인한다.
-- 완전 해소 기준:
-  - 셸 export 없이 `.env`의 `SMOKE_SHOW_VALUES=1`이 적용된다.
-  - 기본값에서는 계속 비민감 메타데이터만 출력된다.
+- Linked item: AR-012
+- Severity: Medium
+- Location: `scripts/smoke.ts:24`, `43-49`
+- Symptom:
+  - The `SHOW_VALUES` constant reads `process.env.SMOKE_SHOW_VALUES` at module load time.
+  - dotenv is called later, inside `main()`.
+  - Therefore, if `SMOKE_SHOW_VALUES=1` is set only in `.env` and not exported directly from the shell, actual value display is not enabled.
+- Impact:
+  - The README/.env contract remains inconsistent for some environment variables.
+  - Since this does not lean toward unintentionally printing sensitive information, it is fail-closed from a safety standpoint, but the diagnostic option does not behave as documented.
+- Required action:
+  - Compute `SHOW_VALUES` after the dotenv load, or pass it explicitly to `formatDetail()`.
+  - Verify that `SMOKE_SHOW_VALUES` is applied using a child-process test that relies only on `.env`.
+- Full-resolution criteria:
+  - `SMOKE_SHOW_VALUES=1` from `.env` is applied without a shell export.
+  - By default, only non-sensitive metadata continues to be printed.
 
-### GAP-005 — sent→failed 전이의 상태 모순이 의도적으로 남아 있음
+### GAP-005 — The state contradiction in the sent→failed transition is intentionally retained
 
-- 연결 항목: AR-014
-- 심각도: 중간
-- 위치:
+- Linked item: AR-014
+- Severity: Medium
+- Location:
   - `src/core/pipeline.ts:350-389`
-  - `docs/DESIGN.md` §2·§3 상태 컬럼 정책
-- 현상:
-  - failed→sent 전이에서는 과거 `_error`를 지우므로 원래 문제의 절반은 해결됐다.
-  - 반대로 과거 sent 행이 새 템플릿에서 failed가 되면 현재 `_send_status=failed`와 과거 `_sent_at`/`_message_id`가 공존한다.
-  - 수정 기록도 이 충돌이 완전히 해소되지 않았음을 명시한다.
-- 영향:
-  - 시트의 네 상태 컬럼만으로 "현재 시도"와 "과거 성공"을 구분할 수 없다.
-  - 담당자 또는 후속 자동화가 `_message_id` 존재 여부를 현재 성공으로 오인할 수 있다.
-- 필요한 조치:
-  - 현재 시도 상태와 과거 성공 감사 정보를 별도 컬럼 또는 SendLog 조회로 분리한다.
-  - 기존 네 컬럼만 유지한다면 각 컬럼의 의미가 마지막 시도인지 마지막 성공인지 일관되게 정해야 한다.
-- 완전 해소 기준:
-  - sent→새 템플릿 failed 상태가 사람과 자동화 모두에게 모호하지 않다.
-  - 상태 컬럼 의미가 SPEC/DESIGN/코드/테스트에서 동일하다.
+  - `docs/DESIGN.md` §2·§3 status column policy
+- Symptom:
+  - In the failed→sent transition, the old `_error` is cleared, so half of the original problem is resolved.
+  - Conversely, if a formerly-sent row becomes failed under a new template, the current `_send_status=failed` and the old `_sent_at`/`_message_id` coexist.
+  - The resolution record itself also states that this conflict has not been fully resolved.
+- Impact:
+  - The sheet's four status columns alone cannot distinguish "current attempt" from "past success."
+  - Staff or downstream automation may mistake the presence of `_message_id` for current success.
+- Required action:
+  - Separate current-attempt status from past-success audit information into a separate column or a SendLog lookup.
+  - If only the existing four columns are kept, the meaning of each column must be consistently fixed as either "last attempt" or "last success."
+- Full-resolution criteria:
+  - A sent→new-template-failed state is unambiguous to both humans and automation.
+  - The meaning of the status columns is identical across SPEC/DESIGN/code/tests.
 
-### GAP-006 — SendLog 조회는 제한됐지만 페이지 이동과 정확한 `truncated`가 없음
+### GAP-006 — SendLog queries are now limited, but there is no pagination and no accurate `truncated`
 
-- 연결 항목: AR-015
-- 심각도: 중간
-- 위치:
+- Linked item: AR-015
+- Severity: Medium
+- Location:
   - `src/adapters/sqliteSendLog.ts:130-140`
   - `src/server.ts:122-131`
-- 현상:
-  - 기본 200, 최대 1000 limit은 단일 호출의 메모리 사용량을 제한하므로 원래 위험을 상당 부분 완화한다.
-  - 하지만 cursor가 없어 1000건보다 오래된 기록은 MCP 도구로 조회할 방법이 없다.
-  - `truncated`는 `entries.length >= effectiveLimit`으로 계산하므로 전체 기록 수가 limit과 정확히 같아도 `true`다.
-- 영향:
-  - 감사 이력 조회가 불완전하고, 클라이언트가 존재하지 않는 다음 페이지를 예상할 수 있다.
-- 필요한 조치:
-  - `limit + 1`건을 조회해 실제 `hasMore`를 판정한다.
-  - 안정적인 DB `id` 또는 `(sent_at, id)` cursor를 입출력 계약에 추가한다.
-- 완전 해소 기준:
-  - 199/200/201건 경계에서 `truncated` 또는 `hasMore`가 정확하다.
-  - 두 페이지 이상을 중복·누락 없이 순회하는 테스트가 존재한다.
+- Symptom:
+  - The default 200 / max 1000 limit substantially mitigates the original risk by capping the memory usage of a single call.
+  - However, since there is no cursor, there is no way to query records older than 1000 entries via the MCP tool.
+  - `truncated` is computed as `entries.length >= effectiveLimit`, so it is `true` even when the total record count exactly equals the limit.
+- Impact:
+  - Audit-history lookups are incomplete, and clients may expect a next page that does not exist.
+- Required action:
+  - Query `limit + 1` entries to determine the actual `hasMore`.
+  - Add a stable DB `id` or a `(sent_at, id)` cursor to the input/output contract.
+- Full-resolution criteria:
+  - `truncated` or `hasMore` is accurate at the 199/200/201-entry boundaries.
+  - A test exists that iterates two or more pages without duplication or omission.
 
-### GAP-007 — 실제 수동 스모크가 여전히 미완료
+### GAP-007 — Actual manual smoke testing is still incomplete
 
-- 연결 항목: AR-016
-- 심각도: 중간(릴리스 완료 판정 차단)
-- 위치: `docs/TASKS.md` T10, `docs/SPEC.md` §5
-- 현상:
-  - 문서 상태를 `CODE DONE / MANUAL SMOKE PENDING`으로 바로잡은 조치는 적절하다.
-  - 그러나 실제 Google Sheet+Resend 실발송, 상태 write-back, 두 번째 실행의 중복 차단은 아직 수행되지 않았다.
-- 완전 해소 기준:
-  1. 실제 테스트 시트에서 dry-run 결과를 확인한다.
-  2. 실제 이메일 1건을 발송한다.
-  3. 시트 상태와 SendLog messageId를 확인한다.
-  4. 같은 조건으로 재실행해 Provider 호출 없이 `skipped_duplicate`가 되는지 확인한다.
-  5. 시크릿 없이 실행 일시와 결과를 감사 기록에 남긴다.
+- Linked item: AR-016
+- Severity: Medium (blocks release-completion verdict)
+- Location: `docs/TASKS.md` T10, `docs/SPEC.md` §5
+- Symptom:
+  - The correction of the document status to `CODE DONE / MANUAL SMOKE PENDING` is appropriate.
+  - However, an actual Google Sheet+Resend live send, status write-back, and duplicate-blocking on a second run have not yet been performed.
+- Full-resolution criteria:
+  1. Confirm dry-run results on an actual test sheet.
+  2. Send one actual email.
+  3. Verify the sheet status and the SendLog messageId.
+  4. Re-run under the same conditions and confirm it becomes `skipped_duplicate` without a Provider call.
+  5. Record the run date/time and results in the audit trail without secrets.
 
-### GAP-008 — 서버 SQLite 종료 수명주기 검증이 불충분함
+### GAP-008 — Verification of the server's SQLite shutdown lifecycle is insufficient
 
-- 연결 항목: AR-018
-- 심각도: 낮음
-- 위치: `src/server.ts:165-173`
-- 현상:
-  - smoke의 `try/finally`는 정상·조기 return·예외 경로에서 DB를 닫으므로 적절하다.
-  - 서버는 `process.on("exit")`에만 close를 연결했다. MCP 서버의 명시적 close/dispose와 의존성 수명주기가 연결돼 있지 않다.
-  - 원 리포트가 권고한 반복 생성·종료 시 파일 descriptor 안정성 테스트도 없다.
-- 필요한 조치:
-  - 서버 조립 결과에 명시적 `close()`/`dispose()`를 제공하고 정상 종료·signal·초기화 실패 경로에서 한 번만 호출한다.
-  - close의 멱등성 또는 중복 호출 방어 정책을 둔다.
-  - 반복 생성·종료 자원 회귀 테스트를 추가한다.
-- 완전 해소 기준:
-  - 정상 종료, 초기화 실패, 대표 signal 경로의 정리가 검증된다.
-  - 장수 프로세스에서 반복 생성·종료해도 DB 핸들이 누적되지 않는다.
+- Linked item: AR-018
+- Severity: Low
+- Location: `src/server.ts:165-173`
+- Symptom:
+  - smoke's `try/finally` appropriately closes the DB on the normal, early-return, and exception paths.
+  - The server only wires close to `process.on("exit")`. This is not connected to the MCP server's explicit close/dispose and dependency lifecycle.
+  - There is also no test for file-descriptor stability across repeated creation/shutdown, as recommended by the original report.
+- Required action:
+  - Provide an explicit `close()`/`dispose()` on the server assembly result, and call it exactly once across the normal-shutdown, signal, and initialization-failure paths.
+  - Establish an idempotency or duplicate-call-guard policy for close.
+  - Add a resource regression test for repeated creation/shutdown.
+- Full-resolution criteria:
+  - Cleanup is verified across normal shutdown, initialization failure, and representative signal paths.
+  - Repeated creation/shutdown in a long-lived process does not accumulate DB handles.
 
-## 3. 신규 회귀
+## 3. New Regression
 
-### REG-001 — 템플릿 해시 구분자가 NUL에서 공백으로 바뀌어 충돌 가능
+### REG-001 — Template hash delimiter changed from NUL to a space, enabling collisions
 
-- 심각도: 높음
-- 위치: `src/core/pipeline.ts:55-61`
-- 기준 리비전과의 차이:
-  - 이전 구현: `subjectTemplate + NUL + bodyTemplate`
-  - 현재 구현: `subjectTemplate + " " + bodyTemplate`
-  - 주석은 여전히 NUL 구분자를 사용한다고 설명해 코드와도 불일치한다.
-- 재현:
+- Severity: High
+- Location: `src/core/pipeline.ts:55-61`
+- Difference from the baseline revision:
+  - Previous implementation: `subjectTemplate + NUL + bodyTemplate`
+  - Current implementation: `subjectTemplate + " " + bodyTemplate`
+  - The comment still describes using a NUL delimiter, so it is also inconsistent with the code.
+- Reproduction:
 
 ```text
 subject="A ", body="B"
 subject="A",  body=" B"
 ```
 
-두 조합은 해시 입력 바이트가 모두 `"A  B"`가 되어 현재 구현에서 같은 12자리 해시를 생성한다.
+For both combinations, the hash input bytes both become `"A  B"`, producing the same 12-character hash in the current implementation.
 
-실측 결과:
+Actual measured result:
 
 ```json
 {"a":"a70bb07d2189","b":"a70bb07d2189","collision":true}
 ```
 
-- 영향:
-  - 서로 다른 템플릿이 같은 멱등성 키로 취급된다.
-  - 사용자가 템플릿을 수정했는데도 재발송이 `skipped_duplicate`로 잘못 차단될 수 있다.
-- 필요한 조치:
-  - NUL 구분자를 복원하거나 길이-prefix와 같이 모호하지 않은 직렬화를 사용한다.
-  - subject/body 경계 공백 조합의 충돌 회귀 테스트를 추가한다.
-- 완전 해소 기준:
-  - 위 두 조합의 해시가 다르다.
-  - 코드 주석과 실제 직렬화 방식이 일치한다.
+- Impact:
+  - Different templates are treated as having the same idempotency key.
+  - Even when a user has modified a template, a resend can be incorrectly blocked as `skipped_duplicate`.
+- Required action:
+  - Restore the NUL delimiter or use an unambiguous serialization such as length-prefixing.
+  - Add a regression test for collisions from boundary-whitespace combinations in subject/body.
+- Full-resolution criteria:
+  - The hashes of the two combinations above are different.
+  - The code comment matches the actual serialization method.
 
-## 4. 완전 해소가 확인된 항목
+## 4. Items Confirmed Fully Resolved
 
-### AR-017 — 이메일 형식 검증
+### AR-017 — Email format validation
 
-- `z.string().email()`을 이용해 `a@`, `@example.com`, `a@@example.com`, 공백 포함 주소를 Provider 호출 전에 차단한다.
-- 대표 불량 주소에 대한 component 회귀 테스트가 존재한다.
-- 기존 정상 주소 및 1,000행 픽스처 테스트도 통과한다.
-- 판정: 완전 해소.
+- `z.string().email()` is used to block `a@`, `@example.com`, `a@@example.com`, and addresses containing whitespace before the Provider call.
+- A component regression test exists for representative malformed addresses.
+- Existing valid-address and 1,000-row fixture tests also pass.
+- Verdict: Fully resolved.
 
-## 5. 자동 검증 결과
+## 5. Automated Verification Results
 
-정상 로컬 IPC 권한에서 `npm run check` 실행 결과:
+Results of running `npm run check` under normal local IPC permissions:
 
-- TypeScript typecheck: 통과
-- ESLint: 통과
-- Prettier: 통과
-- Vitest: 13개 테스트 파일, 130개 테스트 통과
+- TypeScript typecheck: Passed
+- ESLint: Passed
+- Prettier: Passed
+- Vitest: 13 test files, 130 tests passed
 
-제한 샌드박스에서는 e2e 자식 `tsx`의 Unix socket 생성이 `EPERM`으로 실패했으나, 정상 권한 재실행에서 130개 전부 통과했다. 이는 제품 결함이 아닌 실행 환경 제약이다.
+In the restricted sandbox, the e2e child `tsx`'s Unix socket creation failed with `EPERM`, but on re-running under normal permissions, all 130 passed. This is an execution-environment constraint, not a product defect.
 
-자동 게이트가 통과해도 GAP-001~008과 REG-001은 프로세스 중단, DB 장애, 정확한 pagination, 환경변수 로드 순서처럼 현재 테스트가 다루지 않는 경로이므로 해소 판정에 영향을 준다.
+Even though the automated gate passes, GAP-001~008 and REG-001 affect the resolution verdict because they involve paths the current tests do not cover, such as process interruption, DB failure, accurate pagination, and environment-variable load order.
 
-## 6. 조치 우선순위
+## 6. Remediation Priority
 
-1. REG-001 템플릿 해시 충돌 회귀 수정
-2. GAP-001/GAP-002: `claimed`/`sent` 상태 분리와 중단·commit 실패 복구 설계
-3. GAP-003: release 실패의 행 단위 격리
-4. GAP-004: smoke 환경변수 평가 순서 수정
-5. GAP-005: 현재 상태와 과거 성공 감사 정보 분리
-6. GAP-006: 정확한 hasMore와 cursor pagination
-7. GAP-007: 실제 수동 스모크 수행
-8. GAP-008: 서버 자원 수명주기 및 반복 종료 검증
+1. Fix the REG-001 template hash collision regression
+2. GAP-001/GAP-002: design `claimed`/`sent` state separation and interruption/commit-failure recovery
+3. GAP-003: per-row isolation of release failures
+4. GAP-004: fix the smoke environment-variable evaluation order
+5. GAP-005: separate current status from past-success audit information
+6. GAP-006: accurate hasMore and cursor pagination
+7. GAP-007: perform actual manual smoke testing
+8. GAP-008: verify server resource lifecycle and repeated shutdown
 
-## 7. 추적 규칙
+## 7. Tracking Rules
 
-- 이 문서는 `ADVERSARIAL_REVIEW_003_RESOLUTION.md`를 덮어쓰지 않고 후속 재검증 결과를 보존한다.
-- 수정 커밋과 테스트 이름에 `GAP-001`~`GAP-008`, `REG-001`을 연결한다.
-- 모든 완료 기준을 충족하기 전에는 AR-011~016 및 AR-018을 "완전 해소"로 표시하지 않는다.
+- This document does not overwrite `ADVERSARIAL_REVIEW_003_RESOLUTION.md`; it preserves the results of a subsequent re-verification.
+- Link fix commits and test names to `GAP-001`~`GAP-008`, `REG-001`.
+- Do not mark AR-011~016 and AR-018 as "fully resolved" until all full-resolution criteria are met.

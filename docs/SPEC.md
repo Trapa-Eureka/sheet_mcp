@@ -1,67 +1,67 @@
 # SPEC — sheet_mcp v0.1
 
-작성: 2026-09-01 · 상태: 확정 (변경 시 이 문서를 먼저 수정)
+Written: 2026-09-01 · Status: Finalized (if changed, update this document first)
 
-## 1. 배경
+## 1. Background
 
-필리핀 SME는 주문·수금·예약·고객 명단을 대부분 구글 스프레드시트로 관리한다. 알림(주문 확인, 결제 독촉, 예약 리마인더)은 담당자가 시트를 보고 수동으로 보내며, 그래서 누락되고 늦는다.
+Philippine SMEs mostly manage orders, collections, reservations, and customer lists via Google Sheets. Notifications (order confirmations, payment reminders, reservation reminders) are sent manually by staff looking at the sheet, so they get missed or sent late.
 
-원래 목표 채널은 SMS다(필리핀 비즈니스 커뮤니케이션의 표준). 그러나 SIM 등록법 이후 비즈니스 SMS는 게이트웨이(Semaphore, M360 등) 경유 + Sender ID 등록이 사실상 필수라 셋업 리드타임이 있다. 따라서:
+The original target channel was SMS (the standard for Philippine business communication). However, since the SIM Registration Act, business SMS effectively requires going through a gateway (Semaphore, M360, etc.) plus Sender ID registration, which involves setup lead time. Therefore:
 
-> **v0.1은 이메일 발송으로 파이프라인 전체를 검증하고, SMS는 v0.2에서 어댑터 하나 추가로 붙인다.**
+> **v0.1 validates the entire pipeline via email sending, and SMS is added in v0.2 as a single extra adapter.**
 
-이 프로젝트는 MCP 자동화 코어의 공통 기능(시트 연동 → 알림 발송) 첫 검증이다. 독립 MVP로 만들고, 검증되면 코어 및 기존 서비스(세무/유학/물류 버티컬)에 편입한다.
+This project is the first validation of the MCP automation core's common functionality (sheet integration → notification sending). It is built as an independent MVP, and once validated, it will be folded into the core and existing services (tax/study-abroad/logistics verticals).
 
-## 2. v0.1 목표
+## 2. v0.1 Goals
 
-사용자는 다음을 할 수 있다:
+Users can do the following:
 
-1. 알림 대상 데이터가 있는 구글시트를 규약(`docs/DESIGN.md`의 시트 규약)에 맞게 준비한다.
-2. Claude Code/Claude Desktop에서 MCP 도구로:
-   - 시트의 행을 읽고 (`read_rows`)
-   - 발송될 메시지를 **보내지 않고** 미리 본다 (`preview_messages`)
-   - 확인 후 이메일을 발송한다 (`send_notifications`)
-   - 발송 이력을 조회한다 (`get_send_log`)
-3. 발송 결과(성공/실패/시각/메시지 ID)가 시트의 상태 컬럼에 자동 기록된다.
-4. 같은 행에 대해 같은 템플릿으로 **중복 발송되지 않는다** (멱등성).
+1. Prepare a Google Sheet with notification target data according to the convention (the sheet convention in `docs/DESIGN.md`).
+2. From Claude Code/Claude Desktop, using MCP tools:
+   - Read rows from the sheet (`read_rows`)
+   - Preview the messages that will be sent **without sending them** (`preview_messages`)
+   - Send emails after confirmation (`send_notifications`)
+   - Query the send history (`get_send_log`)
+3. The send result (success/failure/timestamp/message ID) is automatically recorded in the sheet's status columns.
+4. The same row is **never sent twice** with the same template (idempotency).
 
-## 3. v0.1 비목표
+## 3. v0.1 Non-Goals
 
-- SMS 실발송 (인터페이스와 스텁만 준비)
-- 웹 UI / 셀프서브 가입
-- 멀티테넌트 인증·과금
-- 자동 스케줄링 (발송은 사람 또는 에이전트가 MCP 도구로 트리거)
-- Sender ID 등록 대행 플로우
+- Actual SMS sending (only the interface and stub are prepared)
+- Web UI / self-serve signup
+- Multi-tenant auth/billing
+- Automatic scheduling (sending is triggered by a person or agent via MCP tools)
+- Sender ID registration proxy flow
 
-## 4. 대표 시나리오
+## 4. Representative Scenarios
 
-세 버티컬(전문서비스·교육/유학·물류)에서 하나씩. v0.1은 셋 다 동일한 파이프라인으로 처리 가능해야 한다.
+One from each of the three verticals (professional services, education/study-abroad, logistics). v0.1 must be able to handle all three with the same pipeline.
 
-1. **세무 마감 리마인더** — 고객 명단 시트에서 `filing_deadline`이 임박한 행을 필터해 "마감 D-7 안내" 이메일 발송. 발송 여부가 시트에 남아 담당자가 전화 팔로업 대상만 추린다.
-2. **유학 서류 마감 안내** — 학생 시트에서 `docs_status = incomplete` 행에 누락 서류 목록을 머지해 안내 발송.
-3. **수금 안내 (물류/유통)** — 미수금 시트에서 `balance > 0` 행에 금액·기한을 머지해 결제 안내 발송.
+1. **Tax filing deadline reminder** — Filter rows in the customer list sheet whose `filing_deadline` is approaching and send a "7 days until deadline" email. Whether the notification was sent is recorded in the sheet, so staff can narrow down who needs a phone follow-up.
+2. **Study-abroad document deadline notice** — In the student sheet, merge the list of missing documents into rows where `docs_status = incomplete` and send a notice.
+3. **Collections notice (logistics/distribution)** — In the outstanding balance sheet, merge the amount and due date into rows where `balance > 0` and send a payment notice.
 
-## 5. 성공 기준 (v0.1 완료 판정)
+## 5. Success Criteria (v0.1 completion determination)
 
-- 실제 구글시트 1개 + 실제 이메일 주소로 위 시나리오 중 1개를 end-to-end 수행 (수동 스모크).
-  **완료(2026-09-02)** — 실제 Google 서비스 계정 + Resend로 발송 성공까지 확인함
-  (docs/ADVERSARIAL_REVIEW_003.md AR-016, docs/TASKS.md T10 참고).
-- 같은 명령을 두 번 실행해도 중복 발송 0건. **완료(2026-09-02)** — 위 스모크에서 재실행 시
-  `skipped_duplicate`로 처리되어 중복 발송 0건을 실측 확인함(docs/TASKS.md T10).
-- 일부 행이 실패해도(잘못된 주소 등) 나머지는 발송되고, 실패 행에 `_error`가 기록된다.
-- `npm run check` 전체 통과, 코어 커버리지 90% 이상.
+- Perform one of the above scenarios end-to-end with 1 real Google Sheet + a real email address (manual smoke test).
+  **Done (2026-09-02)** — Confirmed successful sending using a real Google service account + Resend
+  (see docs/ADVERSARIAL_REVIEW_003.md AR-016, docs/TASKS.md T10).
+- Zero duplicate sends even when the same command is run twice. **Done (2026-09-02)** — On re-running the
+  above smoke test, rows were processed as `skipped_duplicate`, and zero duplicate sends were empirically confirmed (docs/TASKS.md T10).
+- Even if some rows fail (e.g., invalid address), the rest are sent, and `_error` is recorded on the failed rows.
+- `npm run check` passes fully, core coverage at 90% or above.
 
-## 6. 로드맵
+## 6. Roadmap
 
-| 버전 | 내용                                                      | 전제                |
-| ---- | --------------------------------------------------------- | ------------------- |
-| v0.1 | 이메일 발송 파이프라인 + MCP 도구 4종                     | —                   |
-| v0.2 | `SemaphoreSmsProvider` 실구현, Sender ID 등록 가이드 문서 | Sender ID 등록 완료 |
-| v0.3 | 스케줄 발송 (cron — Cloudflare Workers 또는 로컬 데몬)    | v0.1 검증           |
-| v0.4 | 셀프서브: OAuth 시트 연결 + 최소 웹 UI, 사용량 과금       | 코어 편입 판단 후   |
+| Version | Content                                                                           | Prerequisite                    |
+| ------- | --------------------------------------------------------------------------------- | ------------------------------- |
+| v0.1    | Email sending pipeline + 4 MCP tools                                              | —                               |
+| v0.2    | Real `SemaphoreSmsProvider` implementation, Sender ID registration guide document | Sender ID registration complete |
+| v0.3    | Scheduled sending (cron — Cloudflare Workers or a local daemon)                   | v0.1 validated                  |
+| v0.4    | Self-serve: OAuth sheet connection + minimal web UI, usage billing                | After core integration decision |
 
-## 7. 미결 사항
+## 7. Open Items
 
-- [ ] 이메일 발신 도메인: 어떤 도메인의 SPF/DKIM을 셋업할지 (스모크 전 결정 필요)
-- [ ] `id_column`이 없는 시트 지원 여부 (v0.1은 필수로 강제, 행 해시 폴백은 v0.2에서 검토)
-- [ ] 타갈로그/영어 혼용 템플릿 샘플을 fixtures에 포함할지 (권장: 포함)
+- [ ] Email sending domain: which domain's SPF/DKIM to set up (decision needed before smoke test)
+- [ ] Whether to support sheets without an `id_column` (v0.1 mandates it; row-hash fallback to be considered in v0.2)
+- [ ] Whether to include a Tagalog/English mixed template sample in fixtures (recommended: include)
