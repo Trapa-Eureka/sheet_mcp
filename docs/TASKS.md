@@ -68,7 +68,7 @@
   미달 라인은 전부 "내부 오류(버그 리포트)" 방어 가드(config.ts required(), pipeline.ts finalizeStatus/toStatusUpdate)로,
   정상 흐름에서는 도달 불가능해 의도적으로 테스트하지 않음.
 
-### T10 — 스모크 스크립트 + 문서 갱신 · 상태: CODE DONE(2026-09-01) / MANUAL SMOKE PENDING · 의존: T8
+### T10 — 스모크 스크립트 + 문서 갱신 · 상태: DONE(2026-09-02, 실스모크 완료) · 의존: T8
 
 - 목표: `scripts/smoke.ts`(실시트 1개, 실이메일 1건, live 게이트 준수), README 퀵스타트 실제 명령으로 갱신, 예시 시트 템플릿 설명.
 - 완료 기준: [x] smoke가 dry_run에서 발송 없이 미리보기 출력 [x] 사람 실행 절차가 README에 5줄 이내로 [x] check 통과
@@ -78,12 +78,20 @@
   실제 Google/Resend 자격증명 없이는 이 환경에서 직접 실행할 수 없어(사람 전용 수동 스모크),
   동일 분기 로직을 목으로 재현한 임시 스크립트로 5개 시나리오(기본/SEND_MODE만/confirm만/
   대상 2행/둘 다 충족)를 검증 후 삭제함.
-- **상태를 "CODE DONE / MANUAL SMOKE PENDING"으로 명시 구분한다** (docs/ADVERSARIAL_REVIEW_003.md
-  AR-016): 위 자동 검증 가능한 완료 기준(체크박스 3개)은 전부 충족했지만, `docs/SPEC.md` §5의
-  진짜 성공 기준인 "실제 구글시트 1개 + 실제 이메일 1건 end-to-end"는 이 에이전트가 실제
-  Google/Resend 자격증명을 가지고 있지 않아 아직 한 번도 수행되지 않았다. 이 항목은 사람이
-  실제로 수행한 뒤에만 DONE으로 승격하고, 그때 실행 일시·테스트 시트(익명화)·1차 messageId·
-  2차 skipped 결과를 시크릿 없이 여기 기록한다.
+- **실제 수동 스모크 완료 기록** (docs/ADVERSARIAL_REVIEW_003.md AR-016 / AR-024 / STATUS-GAP-005
+  가 요구한 실제 Google Sheets + Resend end-to-end 검증):
+  - 실행 일시: 2026-09-02
+  - 테스트 시트: 사람 소유 구글시트 1개(익명화, sheetId 비공개), `notify_config`+`customers` 탭
+    구성, 데이터 1행
+  - 발신: Resend 테스트 전용 주소 `onboarding@resend.dev`(도메인 미인증 상태 — 이 주소는 계정
+    소유자 본인 이메일로만 발송 가능하다는 Resend 자체 제약이 있어, 수신자를 계정 소유자 이메일로
+    맞춰 검증함. 실제 운영 전환 시에는 인증된 자체 도메인으로 교체해야 한다, `docs/DESIGN.md` §8-B)
+  - 1차 실행(`SEND_MODE=live SMOKE_CONFIRM_SEND=1 npm run smoke`): `sent=1 failed=0`,
+    messageId=`57d32e8d-f371-4374-a753-296237110603`. 시트 상태 컬럼(`_send_status=sent`,
+    `_sent_at`, `_message_id`, `_error=""`) 정상 write-back 확인.
+  - 2차 실행(동일 명령 재실행): `sent=0 failed=0 skipped=1`(`skipped_duplicate`) — **중복 발송
+    0건 확인**(SPEC §5 핵심 성공 기준).
+  - `docs/SPEC.md` §5의 `[PENDING]` 마커 제거, v0.1 성공 기준 전부 충족.
 
 ---
 
@@ -165,14 +173,14 @@
   프루닝 로그 항목을 추가했다. T11~T13 전체가 아직 `npm publish` 실행 전 준비 단계이므로, 실제
   퍼블리시는 이후 별도로 사용자 승인을 받아 진행한다.
 
-### T13 후속 — 적대적 검수 004(publish 최종 검수) 반영 · 상태: CODE DONE(2026-09-02) / MANUAL SMOKE PENDING
+### T13 후속 — 적대적 검수 004(publish 최종 검수) 반영 · 상태: DONE(2026-09-02)
 
 - `docs/ADVERSARIAL_REVIEW_004.md`(AR-019~~027, `be2b38f` 기준)가 "현재 리비전을 publish해서는 안
   된다"고 판정했다. 배포 차단 3건(AR-019~~021)과 운영 안정성 2건(AR-022~~023), 품질 개선 3건
   (AR-025~~027)을 코드로 전부 해소했다 — 상세 내역·검증 증거는 `docs/ADVERSARIAL_REVIEW_004_RESOLUTION.md`.
-- **AR-024(실제 Google Sheet+Resend 수동 스모크)만 남아 있다** — 이는 T10의 기존
-  `MANUAL SMOKE PENDING` 항목과 동일한 사람 전용 실행 항목이며, 코드 변경으로 해소할 수 없다.
-  실제 스모크를 수행해 T10과 함께 DONE으로 승격하기 전까지 `npm publish`는 여전히 보류한다.
+- **AR-024(실제 Google Sheet+Resend 수동 스모크)도 2026-09-02 완료됨** — T10 항목의 상세 기록
+  참고. `docs/ADVERSARIAL_REVIEW_004.md` §2/§8이 요구한 "publish 전 필수 조치 순서" 전부 충족.
+  코드 레벨에서 더 남은 publish 블로커는 없다(npm 로그인·버전 확정 등 운영 절차만 남음).
 
 ---
 
